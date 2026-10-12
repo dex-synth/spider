@@ -29,7 +29,7 @@
 
 ## 协议
 
-`h2r-state-control-v1` 为 Unix socket JSON lines：`describe`、`reset`、`control`、`close`。状态包含 `robot`／`object` 的 joint names、joint positions／velocities，以及 13 维 `root_link_pose_com_velocity`：link 的 xyz、wxyz、根 body COM 的世界线速度、世界角速度。不能把 link 原点速度当作 COM 速度。
+`h2r-state-control-v2` 为 Unix socket JSON lines：`describe`、`reset`、`control`、`close`。状态包含 `robot`／`object` 的 joint names、joint positions／velocities，以及 13 维 `root_link_pose_com_velocity`：link 的 xyz、wxyz、根 body COM 的世界线速度、世界角速度。必填 `root_com_local_m` 给出该 COM 在 link 中的位置，转换可保留跨资产的 link twist 与 wrench 力矩；不能把 link 原点速度当作 COM 速度。
 
 `control` 按连续 tick 和物理时间调用。响应只有手指目标和根部 wrench；每次调用均根据实际状态解码伺服，即使该步没有重规划。私有规划状态可以同步／搜索，方法无权推进、reset 或改写 bench 世界。
 

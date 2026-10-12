@@ -22,7 +22,7 @@ def main():
     if args.socket.exists():
         raise FileExistsError(args.socket)
     controller = ExternalStateController(args.prepared, args.device, args.samples, args.iterations, args.seed)
-    description = {"protocol": "h2r-state-control-v1", "physics_dt": 1/120,
+    description = {"protocol": "h2r-state-control-v2", "physics_dt": 1/120,
         "recipe": controller.meta["recipe"], "replan_decimation": controller.cfg.ctrl_steps,
         "preparation": {key: controller.meta.get(key) for key in ("ik_collision_avoidance", "max_ik_step_norm")},
         "preparation_sha256": hashlib.sha256((args.prepared / "input.json").read_bytes()).hexdigest(),

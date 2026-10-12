@@ -72,14 +72,17 @@ class ExternalStateController:
             root = np.asarray(packet["root_link_pose_com_velocity"], dtype=float)
             q = np.asarray(packet["joint_pos"], dtype=float)
             v = np.asarray(packet["joint_vel"], dtype=float)
+            com = np.asarray(packet["root_com_local_m"], dtype=float)
             if root.shape != (13,) or q.shape != (len(names),) or v.shape != (len(names),):
                 raise ValueError("Wrong physical state dimensions")
-            if not all(np.isfinite(x).all() for x in (root, q, v)) or abs(np.linalg.norm(root[3:7])-1)>1e-4:
+            if com.shape != (3,) or not all(np.isfinite(x).all() for x in (root, q, v, com)) or abs(np.linalg.norm(root[3:7])-1)>1e-4:
                 raise ValueError("Invalid physical state")
             free = model.joint(root_name)
             self.data.qpos[free.qposadr[0]:free.qposadr[0]+7] = root[:7]
             rotation = Rotation.from_quat(root[3:7], scalar_first=True)
-            offset = rotation.apply(model.body(body_name).ipos)
+            offset = rotation.apply(com)
+            if name == "robot":
+                self.robot_com_local = com.copy()
             self.data.qvel[free.dofadr[0]:free.dofadr[0]+6] = np.r_[
                 root[7:10]-np.cross(root[10:], offset), rotation.inv().apply(root[10:])]
             for joint_name, pos, vel in zip(names, q, v):
@@ -128,9 +131,8 @@ class ExternalStateController:
         generalized = self.data.qfrc_actuator[:6]
         # Freejoint rotational generalized force is about the link origin in
         # local axes. The wire protocol applies the wrench at the body COM.
-        body = self.env.model_cpu.body("robot_base")
         rotation = Rotation.from_quat(self.data.qpos[3:7], scalar_first=True)
-        torque = rotation.apply(generalized[3:]) - np.cross(rotation.apply(body.ipos), generalized[:3])
+        torque = rotation.apply(generalized[3:]) - np.cross(rotation.apply(self.robot_com_local), generalized[:3])
         result = {"joint_names": self.joint_names, "position_targets_rad": self.data.ctrl[6:].tolist(),
                   "root_force_world_n": generalized[:3].tolist(), "root_torque_world_nm": torque.tolist(),
                   "wrench_application_point": "root_body_com", "tick": tick, "time_s": time_s,

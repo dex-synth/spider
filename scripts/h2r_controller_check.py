@@ -22,6 +22,11 @@ def main():
     records = [json.loads(line) for line in args.trace.read_text().splitlines()[:8]]
     controller = ExternalStateController(args.prepared, seed=args.seed)
     model, data = controller.env.model_cpu, controller.data
+    # Historical v1 diagnostics used the identical evaluation/planning asset.
+    # Upgrade only this local diagnostic trace; deployment requires v2 fields.
+    for record in records:
+        for name, body_name in (("robot", "robot_base"), ("object", "object_bottom")):
+            record["state"][name].setdefault("root_com_local_m", model.body(body_name).ipos.tolist())
     body = model.body("robot_base").id
     native_optimize = controller.optimize
     synchronization_errors = []
