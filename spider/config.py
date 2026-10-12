@@ -57,6 +57,7 @@ class Config:
     device: str = "cuda:0"
     # Simulation timing
     sim_dt: float = 0.01  # simulation timestep
+    physics_substeps: int = 1  # Internal integrator steps per state/control sample
     ctrl_dt: float = 0.4  # control timestep
     ref_dt: float = 0.02  # reference data timestep
     render_dt: float = 0.02  # rendering timestep
@@ -353,7 +354,7 @@ def get_noise_scale(config: Config) -> torch.Tensor:
         base=10,
     )[None, :, None]  # Shape: (1, num_knot_steps, 1)
     noise_scale = noise_scale.repeat(1, 1, config.nu)
-    if config.embodiment_type in ["bimanual", "right", "left"]:
+    if config.embodiment_type in ["bimanual", "right", "left", "floating_hand_articulated"]:
         object_action_dims = max(int(config.object_action_dims), 0)
         robot_nu = max(int(config.nu - object_action_dims), 0)
         noise_scale[:, :, :3] *= config.pos_noise_scale
@@ -364,7 +365,7 @@ def get_noise_scale(config: Config) -> torch.Tensor:
             noise_scale[:, :, half_dof : half_dof + 3] *= config.pos_noise_scale
             noise_scale[:, :, half_dof + 3 : half_dof + 6] *= config.rot_noise_scale
             noise_scale[:, :, half_dof + 6 : robot_nu] *= config.joint_noise_scale
-        elif config.embodiment_type in ["right", "left"]:
+        elif config.embodiment_type in ["right", "left", "floating_hand_articulated"]:
             noise_scale[:, :, 6:robot_nu] *= config.joint_noise_scale
     else:
         noise_scale *= config.joint_noise_scale

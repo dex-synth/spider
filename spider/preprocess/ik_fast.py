@@ -58,6 +58,17 @@ _MANO_SKELETON_BONES = [
 _MANO_FINGERTIP_INDICES = [4, 8, 12, 16, 20]
 
 
+class _DisplacementCollisionLimit(mink.CollisionAvoidanceLimit):
+    """Geometric displacement bound matching Mink's delta-q QP variable.
+
+    The installed CollisionAvoidanceLimit divides its distance bound by dt,
+    while solve_ik optimizes delta_q and only then divides by dt. Evaluate the
+    geometric bound at unit dt so it constrains displacement, not velocity.
+    """
+    def compute_qp_inequalities(self, configuration, dt):
+        return super().compute_qp_inequalities(configuration, 1.)
+
+
 def _build_ref_skeleton(server, mano_assets_root, qpos_ref, ref_idx, embodiment_type):
     """Render the reference MANO skeleton in viser using fingertip + wrist targets.
 
@@ -141,7 +152,16 @@ def main(
     finger_init_steps: int = 300,
     average_frame_size: int = 3,
     z_offset: float = 0.0,
+    articulated_object: bool = False,
+    floating_hand: bool = False,
+    preserve_timing: bool = False,
+    collision_avoidance: bool = False,
+    max_step_norm: float | None = None,
 ):
+    if preserve_timing and average_frame_size != 1:
+        raise ValueError("Time-preserving task adaptation requires average_frame_size=1")
+    if articulated_object and embodiment_type != "right":
+        raise ValueError("Articulated task adaptation currently supports the right hand")
     # Resolve directories
     dataset_dir = os.path.abspath(dataset_dir)
     processed_dir_robot = get_processed_data_dir(
@@ -275,14 +295,19 @@ def main(
         nq_obj = 7
     else:
         nq_obj = 0
+    if articulated_object:
+        nq_obj = 8
 
     # Create mink configuration
     configuration = mink.Configuration(model)
     data = configuration.data
+    if floating_hand:
+        data.qpos[:7] = qpos_ref[0, ref_idx["right_palm"]]
+        configuration.update()
 
     # Build site name lists
     finger_names = ["thumb_tip", "index_tip", "middle_tip", "ring_tip", "pinky_tip"]
-    if robot_type in ["allegro", "metahand"]:
+    if robot_type in ["allegro", "metahand", "leap"]:
         finger_names = finger_names[:4]
 
     wrist_sites = []
@@ -326,10 +351,34 @@ def main(
 
     solver = "daqp"
     n_substeps = max(1, int(round(ref_dt / sim_dt)))
+    solve_options = {}
+    if collision_avoidance:
+        if not articulated_object or not floating_hand:
+            raise ValueError("Collision-limited task adaptation expects floating hand + articulated object")
+        hand_geoms = [i for i in range(model.ngeom) if model.geom(i).name.startswith("robot_")
+                      and model.geom_contype[i]]
+        object_geoms = [i for i in range(model.ngeom) if model.geom(i).name.startswith("object_")
+                        and model.geom_contype[i]]
+        solve_options["limits"] = [mink.ConfigurationLimit(model), _DisplacementCollisionLimit(
+            model, [(hand_geoms, object_geoms), (hand_geoms, hand_geoms)], gain=.5,
+            minimum_distance_from_collisions=.001, collision_detection_distance=.02)]
+        solve_options["constraints"] = [mink.DofFreezingTask(model, list(range(model.nv-7, model.nv)))]
+
+    def solve(tasks):
+        velocity = mink.solve_ik(configuration, tasks, sim_dt, solver, damping=1e-5, **solve_options)
+        if max_step_norm is not None:
+            if max_step_norm <= 0:
+                raise ValueError("max_step_norm must be positive")
+            # Optional task variant: bound one local linearization update.
+            velocity *= min(1., max_step_norm / max(np.linalg.norm(velocity)*sim_dt, 1e-30))
+        return velocity
 
     # -- Helpers --
     def set_object_qpos(t):
-        if embodiment_type == "bimanual":
+        if articulated_object:
+            data.qpos[-8:-1] = qpos_ref[t, ref_idx["right_object"]]
+            data.qpos[-1] = loaded_data["object_hinge_rad"][start_idx:end_idx][t]
+        elif embodiment_type == "bimanual":
             data.qpos[-14:-7] = qpos_ref[t, ref_idx["right_object"]]
             data.qpos[-7:] = qpos_ref[t, ref_idx["left_object"]]
         elif embodiment_type == "right":
@@ -356,7 +405,7 @@ def main(
     configuration.update()
     set_wrist_targets(0)
     for _ in range(wrist_init_steps):
-        vel = mink.solve_ik(configuration, tasks_wrist, sim_dt, solver, damping=1e-5)
+        vel = solve(tasks_wrist)
         configuration.integrate_inplace(vel, sim_dt)
         set_object_qpos(0)
 
@@ -365,7 +414,7 @@ def main(
     configuration.update()
     set_finger_targets(0)
     for _ in range(finger_init_steps):
-        vel = mink.solve_ik(configuration, tasks_all, sim_dt, solver, damping=1e-5)
+        vel = solve(tasks_all)
         configuration.integrate_inplace(vel, sim_dt)
         set_object_qpos(0)
 
@@ -392,9 +441,7 @@ def main(
             configuration.update()
 
             for _ in range(n_substeps):
-                vel = mink.solve_ik(
-                    configuration, tasks_all, sim_dt, solver, damping=1e-5
-                )
+                vel = solve(tasks_all)
                 configuration.integrate_inplace(vel, sim_dt)
                 set_object_qpos(t)
 
@@ -447,8 +494,21 @@ def main(
         mujoco.mj_differentiatePos(
             model, qvel_list[i - 1], ref_dt, qpos_list[i - 1], qpos_list[i]
         )
-    qpos_list = qpos_list[1:]
+    if preserve_timing:
+        qvel_list = np.vstack((np.zeros((1, model.nv)), qvel_list))
+    else:
+        qpos_list = qpos_list[1:]
     assert qpos_list.shape[0] == qvel_list.shape[0]
+
+    ctrl_list = qpos_list[:, : model.nq - nq_obj]
+    if floating_hand:
+        ctrl_data = mujoco.MjData(model)
+        ctrl_list = []
+        for q in qpos_list:
+            ctrl_data.qpos[:] = q
+            mujoco.mj_forward(model, ctrl_data)
+            ctrl_list.append(ctrl_data.actuator_length.copy())
+        ctrl_list = np.asarray(ctrl_list)
 
     # -- Forward rollout for validation --
     mj_data_rollout = mujoco.MjData(model)
@@ -456,14 +516,14 @@ def main(
     model.opt.timestep = ref_dt / n_rollout_substeps
     mj_data_rollout.qpos[:] = qpos_list[0]
     mj_data_rollout.qvel[:] = qvel_list[0]
-    mj_data_rollout.ctrl[:] = qpos_list[0][: model.nq - nq_obj]
+    mj_data_rollout.ctrl[:] = ctrl_list[0]
     for _ in range(n_rollout_substeps):
         mujoco.mj_step(model, mj_data_rollout)
     n_final = qpos_list.shape[0]
     qpos_rollout = np.zeros((n_final, model.nq))
     qpos_rollout[0] = qpos_list[0]
     for i in range(1, n_final):
-        mj_data_rollout.ctrl[:] = qpos_list[i][: model.nq - nq_obj]
+        mj_data_rollout.ctrl[:] = ctrl_list[i]
         noise = np.random.randn(model.nu) * 0.2
         noise[:6] *= 0.0
         noise[22:28] *= 0.0
@@ -482,7 +542,7 @@ def main(
         loguru.logger.info(f"Saved video to {video_path}")
 
     out_npz = f"{file_dir}/trajectory_kinematic.npz"
-    np.savez(out_npz, qpos=qpos_list, qvel=qvel_list, frequency=1 / ref_dt)
+    np.savez(out_npz, qpos=qpos_list, qvel=qvel_list, ctrl=ctrl_list, frequency=1 / ref_dt)
     loguru.logger.info(f"Saved {out_npz}")
 
     out_npz = f"{file_dir}/trajectory_ikrollout.npz"

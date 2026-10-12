@@ -77,7 +77,9 @@ def _compile_step(
 
 def setup_mj_model(config: Config) -> mujoco.MjModel:
     model_cpu = mujoco.MjModel.from_xml_path(config.model_path)
-    model_cpu.opt.timestep = float(config.sim_dt)
+    if config.physics_substeps < 1:
+        raise ValueError("physics_substeps must be positive")
+    model_cpu.opt.timestep = float(config.sim_dt) / config.physics_substeps
     if config.embodiment_type in ["left", "right", "bimanual"]:
         # setup for hand
         model_cpu.opt.iterations = 20
@@ -171,7 +173,13 @@ def setup_env(config: Config, ref_data: tuple[torch.Tensor, ...]) -> MJWPEnv:
 
 def _weight_diff_qpos(config: Config) -> torch.Tensor:
     w = torch.ones(config.nv, device=config.device)
-    if config.embodiment_type == "bimanual":
+    if config.embodiment_type == "floating_hand_articulated":
+        w[:3] = config.base_pos_rew_scale
+        w[3:6] = config.base_rot_rew_scale
+        w[6:-7] = config.joint_rew_scale
+        w[-7:-4] = config.pos_rew_scale
+        w[-4:] = config.rot_rew_scale  # orientation and the explicit object hinge
+    elif config.embodiment_type == "bimanual":
         half_dof = int(config.nu // 2)
         w[:3] = config.base_pos_rew_scale
         w[3:6] = config.base_rot_rew_scale
@@ -218,7 +226,14 @@ def _diff_qpos(
     """
     batch_size = qpos_sim.shape[0]
     qpos_diff = torch.zeros((batch_size, config.nv), device=config.device)
-    if config.embodiment_type == "bimanual":
+    if config.embodiment_type == "floating_hand_articulated":
+        qpos_diff[:, :3] = qpos_sim[:, :3] - qpos_ref[:, :3]
+        qpos_diff[:, 3:6] = quat_sub(qpos_sim[:, 3:7], qpos_ref[:, 3:7])
+        qpos_diff[:, 6:-7] = qpos_sim[:, 7:-8] - qpos_ref[:, 7:-8]
+        qpos_diff[:, -7:-4] = qpos_sim[:, -8:-5] - qpos_ref[:, -8:-5]
+        qpos_diff[:, -4:-1] = quat_sub(qpos_sim[:, -5:-1], qpos_ref[:, -5:-1])
+        qpos_diff[:, -1] = qpos_sim[:, -1] - qpos_ref[:, -1]
+    elif config.embodiment_type == "bimanual":
         if config.nq_obj == 12:
             qpos_diff[:, :-12] = qpos_sim[:, :-12] - qpos_ref[:, :-12]
             qpos_diff[:, -12:-9] = qpos_sim[:, -12:-9] - qpos_ref[:, -12:-9]
@@ -700,6 +715,11 @@ def get_terminate(
     # compute object position and orientation error, compare to thereshold
     qpos_sim = wp.to_torch(env.data_wp.qpos)
     qpos_ref, qvel_ref, ctrl_ref, contact_ref, _contact_pos_ref = ref_slice
+    if config.embodiment_type == "floating_hand_articulated":
+        diff = _diff_qpos(config, qpos_sim, qpos_ref.unsqueeze(0).repeat(qpos_sim.shape[0], 1))
+        return ((torch.norm(diff[:, -7:-4], dim=1) > config.object_pos_threshold)
+                | (torch.norm(diff[:, -4:-1], dim=1) > config.object_rot_threshold)
+                | (diff[:, -1].abs() > config.object_rot_threshold))
     if config.embodiment_type == "bimanual":
         if config.nq_obj == 12:
             right_obj_pos = qpos_sim[:, -12:-9]
@@ -979,7 +999,8 @@ def step_env(config: Config, env: MJWPEnv, ctrl_mujoco: torch.Tensor):
         env = apply_perturbation(config, env)
         # step control
         wp.copy(env.data_wp.ctrl, wp.from_torch(ctrl_mujoco.to(torch.float32)))
-        wp.capture_launch(env.graph)
+        for _ in range(config.physics_substeps):
+            wp.capture_launch(env.graph)
 
 
 def save_env_params(config: Config, env: MJWPEnv):
