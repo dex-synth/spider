@@ -17,6 +17,22 @@
 
 已验证范围：共同 `s02/scissors_use_01 [350,451)`，右 LeapHand、1× 双部件剪刀、MuJoCo Warp 规划、独立 CPU MuJoCo 评估。开发运行完成全时域物理执行，但物体掉落、跟踪失败；不能称为论文性能复现或正式 benchmark 成绩。
 
+## 已保存 IK 的 Viser 可视化
+
+`scripts/h2r_view_kinematic.py` 复用 `spider/viewers/viser_viewer.py` 渲染已保存的 `trajectory_kinematic.npz`，读取原始 30 Hz／101 帧 IK，不重新求解 IK、运行 MPC 或积分物理。MuJoCo 仅执行 forward kinematics，服务可禁用 CUDA 后在 CPU 上运行。
+
+```bash
+CUDA_VISIBLE_DEVICES= /opt/h2r/spider/bin/python scripts/h2r_view_kinematic.py \
+  --prepared "$H2R_PREPARED" --bundle "$H2R_REFERENCE" \
+  --host 0.0.0.0 --port 8086
+```
+
+默认 host 为 `127.0.0.1`；显式指定 `0.0.0.0` 后可从宿主网络访问。已有端口会拒绝启动。`--status` 可指定启动检查报告路径，进程存活仍需实际核对。
+
+视图支持逐帧、播放／暂停、循环、播放速度、可视／碰撞几何开关、人手示范叠加与相机重置。剪刀 bottom 为蓝色、top 为橙色，保留原始铰链运动；颜色只改变显示，不写回资产。界面显示源帧、示范时间和铰链角度，明确标注为 kinematic 结果。`Human demonstration` 叠加共同数据包中解码的右 MANO 网格，不用机器人 IK 冒充人类示范。
+
+当前共同片段的 101 帧 forward kinematics 均有限；HTTP、WebSocket 场景下发、末帧与保存 qpos 的位姿对应、播放和人手开关已验证。此检查不构成 physical rollout 或运动复现成绩。
+
 ## 配方差异
 
 - 复用 `preprocess/ik_fast.py` 的 Mink wrist／finger／posture tasks；新增四指 Leap、浮动根部和 object hinge 的资产映射。
