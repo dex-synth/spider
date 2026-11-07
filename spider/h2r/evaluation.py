@@ -1,4 +1,4 @@
-"""Connect SPIDER's complete MPC controller to the independent evaluator."""
+"""Deploy a sealed SPIDER plan, or explicit online MPC, to the evaluator."""
 
 import argparse
 import json
@@ -69,7 +69,16 @@ def start_request(hello, task, binding, initial):
     }
 
 
-def run(stream, prepared, task, binding, output, device, controller_factory):
+def run(
+    stream,
+    prepared,
+    task,
+    binding,
+    output,
+    device,
+    controller_factory,
+    binding_file="h2r_binding.json",
+):
     """Handle independent episode lifecycles; finished slots never issue controls."""
     hello = receive(stream)
     request = start_request(
@@ -103,7 +112,10 @@ def run(stream, prepared, task, binding, output, device, controller_factory):
                 if name in finished:
                     raise ValueError("Evaluator reactivated a finished episode")
                 if name not in controllers:
-                    print(f"Initialize MJWarp controller: {name}", flush=True)
+                    print(
+                        f"Initialize {binding.get('deployment', 'online-mpc')}: {name}",
+                        flush=True,
+                    )
                     controllers[name] = controller_factory(
                         prepared, task, device, seeds[name]
                     )
@@ -121,7 +133,7 @@ def run(stream, prepared, task, binding, output, device, controller_factory):
             send(stream, {"type": "step", "commands": commands})
     result = {
         "task_id": task["task_id"],
-        "binding_sha256": digest(prepared / "h2r_binding.json"),
+        "binding_sha256": digest(prepared / binding_file),
         "elapsed_s": time.perf_counter() - started,
         "episodes": finished,
     }
@@ -132,15 +144,32 @@ def run(stream, prepared, task, binding, output, device, controller_factory):
 def main():
     """Run one persistent controller process for all evaluator episodes."""
     parser = argparse.ArgumentParser(description=__doc__)
-    for key in ("prepared", "task", "socket", "output"):
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--plan", type=Path, help="Sealed offline plan, reused for every eval seed"
+    )
+    source.add_argument("--prepared", type=Path, help="Legacy online MPC deployment")
+    for key in ("task", "socket", "output"):
         parser.add_argument(f"--{key}", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--timeout-s", type=float, default=300.0)
     args = parser.parse_args()
     task = load_task(args.task)
-    binding = load_prepared(args.prepared, task)
+    if args.plan is not None:
+        from .replay import Replay, load_plan
+
+        binding, data = load_plan(args.plan, task)
+        prepared, binding_file = args.plan, "plan.json"
+
+        def factory(prepared, task, device, seed):
+            return Replay(task, binding, data)
+    else:
+        from .controller import Controller
+
+        prepared, binding_file = args.prepared, "h2r_binding.json"
+        binding = load_prepared(prepared, task)
+        factory = Controller
     args.output.mkdir(parents=True, exist_ok=False)
-    from .controller import Controller
 
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
@@ -148,12 +177,13 @@ def main():
             stream.connect(str(args.socket))
             run(
                 stream,
-                args.prepared,
+                prepared,
                 task,
                 binding,
                 args.output,
                 args.device,
-                Controller,
+                factory,
+                binding_file=binding_file,
             )
     except Exception as error:
         write_json(

@@ -114,18 +114,12 @@ class Controller:
 
     def control(self, frame, joint_names):
         """Replan at each external control tick, returning named robot targets only."""
-        cfg = self.config
-        tick, now = frame["tick"], frame["time_s"]
-        if (
-            type(tick) is not int
-            or tick != self.tick
-            or tick >= self.task["end_tick"]
-            or not np.isfinite(now)
-            or not np.isclose(now, tick * self.task["dt_s"], rtol=0, atol=1e-9)
-        ):
-            raise ValueError("Stale or inconsistent evaluation clock")
-        start = time.perf_counter()
         self.layout.write_observation(self.data, frame, joint_names)
+        return self.optimize_current(frame["tick"], frame["time_s"])
+
+    def synchronize(self):
+        """Copy the current physical state into every private candidate world."""
+        cfg = self.config
         with wp.ScopedDevice(cfg.device):
             mjwarp.reset_data(self.env.model_wp, self.env.data_wp)
             for field in ("qpos", "qvel", "ctrl"):
@@ -136,8 +130,42 @@ class Controller:
                     getattr(self.env.data_wp, field),
                     wp.from_torch(value.repeat(cfg.num_samples, 1)),
                 )
-            wp.to_torch(self.env.data_wp.time).fill_(now)
+            wp.to_torch(self.env.data_wp.time).fill_(self.data.time)
             mjwarp.forward(self.env.model_wp, self.env.data_wp)
+
+    def advance(self):
+        """Execute the selected control in private MJWarp, as run_mjwp.py does."""
+        cfg = self.config
+        self.synchronize()
+        mjwp.step_env(cfg, self.env, self.controls[0])
+        self.data.qpos[:] = mjwp.get_qpos(cfg, self.env)[0].detach().cpu().numpy()
+        self.data.qvel[:] = mjwp.get_qvel(cfg, self.env)[0].detach().cpu().numpy()
+        self.data.ctrl[:] = self.controls[0].detach().cpu().numpy()
+        clock = float(wp.to_torch(self.env.data_wp.time)[0].item())
+        expected = self.tick * self.task["dt_s"]
+        if (
+            not np.isfinite(self.data.qpos).all()
+            or not np.isfinite(self.data.qvel).all()
+        ):
+            raise ValueError("Non-finite private planning state")
+        if not np.isclose(clock, expected, rtol=0, atol=1e-5):
+            raise ValueError("Private planning physics clock changed")
+        self.data.time = expected
+        mujoco.mj_forward(self.env.model_cpu, self.data)
+
+    def optimize_current(self, tick, now):
+        """Optimize from the current physical state with the native sampling loop."""
+        cfg = self.config
+        if (
+            type(tick) is not int
+            or tick != self.tick
+            or tick >= self.task["end_tick"]
+            or not np.isfinite(now)
+            or not np.isclose(now, tick * self.task["dt_s"], rtol=0, atol=1e-9)
+        ):
+            raise ValueError("Stale or inconsistent evaluation clock")
+        start = time.perf_counter()
+        self.synchronize()
         reference = self.reference(now)
         if self.controls is None:
             self.controls = reference[2][:-1].clone()
