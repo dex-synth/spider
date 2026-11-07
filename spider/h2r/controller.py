@@ -148,7 +148,12 @@ class Controller:
             or not np.isfinite(self.data.qvel).all()
         ):
             raise ValueError("Non-finite private planning state")
-        if not np.isclose(clock, expected, rtol=0, atol=1e-5):
+        # MJWarp stores time in float32; accumulated substep rounding grows with
+        # absolute time even though each planning interval starts at the fixed tick.
+        clock_atol = max(
+            1e-5, 2 * cfg.physics_substeps * float(np.spacing(np.float32(expected)))
+        )
+        if not np.isclose(clock, expected, rtol=0, atol=clock_atol):
             raise ValueError("Private planning physics clock changed")
         self.data.time = expected
         mujoco.mj_forward(self.env.model_cpu, self.data)
