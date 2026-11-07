@@ -52,24 +52,26 @@ def verify_files(root, files):
 
 
 def verify_xml(root, entry, files):
-    """Require executable MJCF dependencies to belong to the sealed closure."""
-    pending, visited = [entry], set()
-    while pending:
-        name = pending.pop()
-        if name in visited:
-            continue
-        visited.add(name)
-        if name not in files:
-            raise ValueError(f"Unsealed MJCF dependency: {name}")
-        for node in ET.parse(local_file(root, name)).iter():
-            if "file" not in node.attrib:
+    """Validate the flattened MJCF exported by bench and its explicit resources."""
+    if entry not in files:
+        raise ValueError(f"Unsealed MJCF dependency: {entry}")
+    for node in ET.parse(local_file(root, entry)).iter():
+        # Bench assembly expands includes. Reject alternative resolution rules
+        # rather than verify one path and let MuJoCo load another.
+        if node.tag in {"include", "plugin", "model"}:
+            raise ValueError(f"Unsupported task MJCF dependency: {node.tag}")
+        if node.tag == "compiler" and (
+            any(node.get(key) for key in ("assetdir", "meshdir", "texturedir"))
+            or node.get("strippath", "false") != "false"
+        ):
+            raise ValueError("Task MJCF must use explicit relative asset paths")
+        for key, value in node.attrib.items():
+            if not key.startswith("file"):
                 continue
-            child = local_file(root, str(Path(name).parent / node.attrib["file"]))
+            child = local_file(root, str(Path(entry).parent / value))
             relative = str(child.relative_to(Path(root).resolve()))
             if relative not in files:
                 raise ValueError(f"Unsealed MJCF dependency: {relative}")
-            if node.tag == "include":
-                pending.append(relative)
 
 
 def arrays(path):
@@ -86,6 +88,8 @@ def load_task(path):
         raise ValueError("Unsupported evaluation task format")
     if identity({k: v for k, v in task.items() if k != "task_id"}) != task["task_id"]:
         raise ValueError("Changed task identity")
+    if not {"reference.json", "reference.npz", task["scene"]} <= task["files"].keys():
+        raise ValueError("Incomplete task files")
     verify_files(path, task["files"])
     verify_xml(path, task["scene"], task["files"])
     if (
@@ -105,34 +109,12 @@ def load_task(path):
     return task
 
 
-def load_inputs(human, robot, task_path):
-    """Bind decoded human input and robot package to the fixed task."""
-    human, robot = Path(human).resolve(), Path(robot).resolve()
-    manifest = read_json(human / "bundle.json")
-    if (
-        manifest["format"] not in {f"h2r-preprocess-v{i}" for i in (1, 2, 3)}
-        or manifest.get("kind", "physical") != "physical"
-    ):
-        raise ValueError("Expected a physical preprocessing bundle v1/v2/v3")
-    if identity(manifest["files"]) != manifest["bundle_id"]:
-        raise ValueError("Changed human bundle identity")
-    verify_files(human, manifest["files"])
-    verify_xml(human, "scene.xml", manifest["files"])
-    robot_meta = read_json(robot / "robot.json")
-    verify_files(robot, robot_meta["files_sha256"])
+def load_inputs(task_path):
+    """Read decoded demonstration and robot semantics from the sealed task only."""
+    task_path = Path(task_path).resolve()
     task = load_task(task_path)
-    for key in ("bundle_id", "scene_id"):
-        if task[key] != manifest[key]:
-            raise ValueError(f"Task differs from human bundle: {key}")
-    if task["robot_manifest_sha256"] != digest(robot / "robot.json"):
-        raise ValueError("Task differs from robot package")
-    if task["semantics"] != read_json(robot / "semantics.json"):
-        raise ValueError("Task robot semantics changed")
-    for name in ("reference.json", "reference.npz"):
-        if task["files"][name] != manifest["files"][name]:
-            raise ValueError(f"Task reference differs: {name}")
-    reference = read_json(human / "reference.json")
-    if reference["reference_sha256"] != manifest["files"]["reference.npz"]:
+    reference = read_json(task_path / "reference.json")
+    if reference["reference_sha256"] != task["files"]["reference.npz"]:
         raise ValueError("Reference checksum differs")
     coordinates = reference["coordinates"]
     if isinstance(coordinates, dict):
@@ -146,7 +128,7 @@ def load_inputs(human, robot, task_path):
         )
     if not valid_coordinates or reference.get("speed") != 1.0:
         raise ValueError("Unsupported reference coordinates or speed")
-    data = arrays(human / "reference.npz")
+    data = arrays(task_path / "reference.npz")
     times = data["time_s"]
     if (
         times.ndim != 1
@@ -167,15 +149,37 @@ def load_inputs(human, robot, task_path):
     return task, reference, data
 
 
-def load_prepared(path, task):
-    """Validate a portable deployment against the selected evaluation task."""
-    path = Path(path).resolve()
-    binding = read_json(path / "h2r_binding.json")
-    if binding["format"] != "spider-h2r-v1":
-        raise ValueError("Unsupported SPIDER deployment")
+PREPARED_FILES = {
+    "trajectory_keypoints.npz",
+    "trajectory_kinematic.npz",
+    "initial_robot.json",
+    "initialization.json",
+    "resolved_config.yaml",
+    "calibration.json",
+}
+
+
+def validate_prepared(binding, task):
+    """Accept method artifacts without any method-supplied physical model."""
+    if binding.get("format") != "spider-h2r-v2":
+        raise ValueError(
+            "Regenerate SPIDER preparation from --task (requires spider-h2r-v2)"
+        )
     for key in ("task_id", "bundle_id", "scene_id", "robot_manifest_sha256"):
         if binding[key] != task[key]:
             raise ValueError(f"Prepared input differs from task: {key}")
+    if binding.get("model_source") != "task" or "planning_scene" in binding:
+        raise ValueError("Planning model must come from the task")
+    if set(binding["files"]) != PREPARED_FILES:
+        raise ValueError(
+            "Prepared files must contain only method references and configuration"
+        )
+
+
+def load_prepared(path, task):
+    """Validate method artifacts against the selected evaluation task."""
+    path = Path(path).resolve()
+    binding = read_json(path / "h2r_binding.json")
+    validate_prepared(binding, task)
     verify_files(path, binding["files"])
-    verify_xml(path, binding["planning_scene"], binding["files"])
     return binding

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from spider.h2r.bundle import digest, identity, write_json
+from spider.h2r.bundle import PREPARED_FILES, digest, identity, read_json, write_json
 from spider.h2r.replay import Replay, load_plan
 
 
@@ -44,7 +44,21 @@ class ReplayTests(unittest.TestCase):
         (root / "resolved_config.yaml").write_text("{}\n")
         binding = {
             **{k: v for k, v in self.task.items() if k != "semantics"},
-            "format": "spider-h2r-plan-v1",
+            "format": "spider-h2r-plan-v2",
+            "preparation": {
+                **{
+                    k: self.task[k]
+                    for k in (
+                        "task_id",
+                        "bundle_id",
+                        "scene_id",
+                        "robot_manifest_sha256",
+                    )
+                },
+                "format": "spider-h2r-v2",
+                "model_source": "task",
+                "files": dict.fromkeys(PREPARED_FILES, "test-digest"),
+            },
             "controls": len(ticks),
             **self.task["semantics"],
             "files": {
@@ -84,6 +98,25 @@ class ReplayTests(unittest.TestCase):
                         replay.control(
                             {"tick": 16, "time_s": 16 / 240}, ["wrist", "finger"]
                         )
+
+    def test_resealed_plan_cannot_restore_legacy_model_source(self):
+        """Require task-only provenance even after an attacker updates plan_id."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.artifact(root)
+            original = read_json(root / "plan.json")
+            for legacy in (True, False):
+                changed = copy.deepcopy(original)
+                if legacy:
+                    changed["format"] = "spider-h2r-plan-v1"
+                else:
+                    changed["preparation"]["planning_scene"] = "custom.xml"
+                changed["plan_id"] = identity(
+                    {k: v for k, v in changed.items() if k != "plan_id"}
+                )
+                write_json(root / "plan.json", changed)
+                with self.assertRaises(ValueError):
+                    load_plan(root, self.task)
 
     def test_incomplete_nonfinite_or_changed_plan_rejected(self):
         """Reject truncation, non-finite controls, mismatched tasks and tampering."""

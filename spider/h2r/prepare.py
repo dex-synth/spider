@@ -1,10 +1,8 @@
-"""Prepare a portable SPIDER deployment from a fixed human/robot/task bundle."""
+"""Prepare a portable SPIDER deployment from a fixed benchmark task."""
 
 import argparse
-import shutil
 import subprocess
 import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import mink
@@ -14,35 +12,11 @@ import yaml
 
 from spider.preprocess.ik_fast import make_tasks, solve_velocity
 
-from .bundle import digest, load_inputs, read_json, write_json
+from .bundle import digest, load_inputs, write_json
 from .model import Layout
 from .reference import hand_targets, velocities
+from .scene import calibration_for, planning_model
 from .settings import settings, validate_clock
-
-
-def planning_model(task_path, task, output, calibration):
-    """Copy the sealed scene; add only massless, non-colliding tracking sites."""
-    source = Path(task_path) / task["scene"]
-    shutil.copytree(source.parent, output)
-    path = output / source.name
-    tree = ET.parse(path)
-    wrist_sites, finger_sites = [], []
-    for side in task["semantics"]["hands"]:
-        spec = calibration[side]
-        bodies = [spec["wrist_body"], *spec["fingertip_bodies"]]
-        names = [f"h2r_{side}_wrist", *[f"h2r_{side}_tip_{i}" for i in range(5)]]
-        for body, name in zip(bodies, names, strict=True):
-            node = tree.find(f".//body[@name='{body}']")
-            if node is None or tree.find(f".//site[@name='{name}']") is not None:
-                raise ValueError(
-                    f"Missing tracking body or duplicate site: {body}/{name}"
-                )
-            ET.SubElement(node, "site", name=name, pos="0 0 0", size="0.001", group="4")
-        wrist_sites.append(names[0])
-        finger_sites.extend(names[1:])
-    tree.write(path, encoding="unicode")
-    model = mujoco.MjModel.from_xml_path(str(path))
-    return path, model, wrist_sites, finger_sites
 
 
 def solve_kinematics(layout, reference_q, times, wrists, tips, sites, options):
@@ -136,27 +110,22 @@ def check_initialization(model, layout, qpos, task):
     }
 
 
-def prepare(human, robot, task_path, output, config=None):
+def prepare(task_path, output, config=None):
     """Build references and seal the deployment only after successful validation."""
     started = time.perf_counter()
     task_path, output = Path(task_path).resolve(), Path(output).resolve()
-    for source in (human, robot, task_path):
-        if output.is_relative_to(Path(source).resolve()):
-            raise ValueError("Output must be outside input bundles")
-    task, reference, data = load_inputs(human, robot, task_path)
+    if output.is_relative_to(task_path):
+        raise ValueError("Output must be outside the task")
+    task, reference, data = load_inputs(task_path)
     options = settings(config)
     validate_clock(options["mpc"], task)
-    calibration = read_json(Path(__file__).parent / "config/sharpa_wave.json")
-    if task["robot_name"] not in calibration["robots"]:
-        raise ValueError(f"No SPIDER hand calibration for {task['robot_name']}")
+    calibration = calibration_for(task)
     output.mkdir(parents=True, exist_ok=False)
     (output / "resolved_config.yaml").write_text(
         yaml.safe_dump(options, sort_keys=False)
     )
     write_json(output / "calibration.json", calibration)
-    path, model, wrist_sites, finger_sites = planning_model(
-        task_path, task, output / "planning", calibration
-    )
+    model, wrist_sites, finger_sites = planning_model(task_path, task, calibration)
     layout = Layout(model, task)
     wrists, tips = hand_targets(
         reference, data, task["semantics"]["hands"], calibration
@@ -199,12 +168,12 @@ def prepare(human, robot, task_path, output, config=None):
         subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True)
     )
     binding = {
-        "format": "spider-h2r-v1",
+        "format": "spider-h2r-v2",
         "recipe": "fast-ik-native-sampling-h2r",
         "method_revision": revision,
         "method_worktree_dirty": dirty,
         "planning_backend": "mjwarp",
-        "planning_scene": str(path.relative_to(output)),
+        "model_source": "task",
         "contact_guidance": False,
         "contact_rew_scale": 0,
         "object_reward": "all dynamic roots and passive hinges",
@@ -228,15 +197,11 @@ def prepare(human, robot, task_path, output, config=None):
 def main():
     """Prepare from explicit artifact paths, without loading a raw dataset."""
     parser = argparse.ArgumentParser(description=__doc__)
-    for key in ("human-bundle", "robot-bundle", "task", "output"):
+    for key in ("task", "output"):
         parser.add_argument(f"--{key}", type=Path, required=True)
     parser.add_argument("--config", type=Path)
     args = parser.parse_args()
-    print(
-        prepare(
-            args.human_bundle, args.robot_bundle, args.task, args.output, args.config
-        )
-    )
+    print(prepare(args.task, args.output, args.config))
 
 
 if __name__ == "__main__":

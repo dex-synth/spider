@@ -12,6 +12,7 @@ import warp as wp
 from .bundle import load_prepared, load_task, read_json, write_json
 from .controller import Controller
 from .model import Layout
+from .scene import planning_model
 
 
 def frames(path, task):
@@ -34,14 +35,16 @@ def frames(path, task):
 def check(prepared, task_path, run, controller_log, episode, device, steps):
     """Compare saved planner initial states, then inspect GPU state before search."""
     task = load_task(task_path)
-    binding = load_prepared(prepared, task)
+    load_prepared(prepared, task)
     metadata = read_json(run / "run.json")
     if metadata["task_id"] != task["task_id"] or metadata["mode"] != "sim":
         raise ValueError(
             "Requires a matching nominal run; noisy observations are not truth"
         )
     observations = frames(run / episode / "physical.jsonl", task)
-    model = mujoco.MjModel.from_xml_path(str(prepared / binding["planning_scene"]))
+    model, _, _ = planning_model(
+        task_path, task, read_json(prepared / "calibration.json")
+    )
     layout, data = Layout(model, task), mujoco.MjData(model)
     names = layout.names
     count, max_error = 0, 0.0
@@ -62,7 +65,7 @@ def check(prepared, task_path, run, controller_log, episode, device, steps):
             count += 1
     if not count or steps < 1 or len(observations) < steps:
         raise ValueError("Insufficient controller or physical frames")
-    controller = Controller(prepared, task, device, seed=17)
+    controller = Controller(prepared, task_path, device, seed=17)
     optimize = controller.optimize
     previous = None
     gpu_error = 0.0

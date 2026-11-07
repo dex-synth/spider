@@ -148,7 +148,11 @@ def main():
     source.add_argument(
         "--plan", type=Path, help="Sealed offline plan, reused for every eval seed"
     )
-    source.add_argument("--prepared", type=Path, help="Legacy online MPC deployment")
+    source.add_argument(
+        "--prepared",
+        type=Path,
+        help="Explicit online MPC diagnostic using task-only preparation",
+    )
     for key in ("task", "socket", "output"):
         parser.add_argument(f"--{key}", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
@@ -168,7 +172,10 @@ def main():
 
         prepared, binding_file = args.prepared, "h2r_binding.json"
         binding = load_prepared(prepared, task)
-        factory = Controller
+
+        def factory(prepared, task, device, seed):
+            return Controller(prepared, args.task, device, seed)
+
     args.output.mkdir(parents=True, exist_ok=False)
 
     try:

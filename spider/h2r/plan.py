@@ -26,7 +26,7 @@ def plan(prepared, task_path, output, device, seed):
     binding = load_prepared(prepared, task)
     output.mkdir(parents=True, exist_ok=False)
     started = time.perf_counter()
-    controller = Controller(prepared, task, device, seed)
+    controller = Controller(prepared, task_path, device, seed)
     # Match the common initial proposal: reference object pose, robot IK, zero
     # velocities and no warm-up. No reference states are imposed after this reset.
     controller.data.qpos[:] = controller.source["qpos"][0]
@@ -71,7 +71,7 @@ def plan(prepared, task_path, output, device, seed):
         shutil.copy2(prepared / name, output / name)
     repo = Path(__file__).resolve().parents[2]
     manifest = {
-        "format": "spider-h2r-plan-v1",
+        "format": "spider-h2r-plan-v2",
         "deployment": "offline-control-replay",
         "planning_backend": "mjwarp",
         "planning_seed": seed,

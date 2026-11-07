@@ -5,16 +5,20 @@ from pathlib import Path
 
 import numpy as np
 
-from .bundle import arrays, identity, read_json, verify_files
+from .bundle import arrays, identity, read_json, validate_prepared, verify_files
 
 
 def load_plan(path, task):
     """Require a complete, finite control sequence on the fixed task clock."""
     path = Path(path)
     binding = read_json(path / "plan.json")
-    if binding.get("format") != "spider-h2r-plan-v1" or binding.get(
-        "plan_id"
-    ) != identity({k: v for k, v in binding.items() if k != "plan_id"}):
+    if binding.get("format") != "spider-h2r-plan-v2":
+        raise ValueError(
+            "Regenerate SPIDER plan from --task (requires spider-h2r-plan-v2)"
+        )
+    if binding.get("plan_id") != identity(
+        {k: v for k, v in binding.items() if k != "plan_id"}
+    ):
         raise ValueError("Invalid SPIDER plan identity")
     for key in (
         "task_id",
@@ -27,6 +31,7 @@ def load_plan(path, task):
     ):
         if binding[key] != task[key]:
             raise ValueError(f"Plan differs from task: {key}")
+    validate_prepared(binding["preparation"], task)
     names = task["semantics"]["joint_names"]
     if (
         binding["joint_names"] != names

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "spider"
 version = "0.1.0"
-description = "Add your description here"
+description = "SPIDER baseline for benchmark-owned h2r_bench tasks"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -37,7 +37,9 @@ dependencies = [
 ]
 
 [project.scripts]
-spider-mjwp = "examples.run_mjwp:main"
+spider-h2r-prepare = "spider.h2r.prepare:main"
+spider-h2r-plan = "spider.h2r.plan:main"
+spider-h2r-evaluate = "spider.h2r.evaluation:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -72,23 +74,6 @@ dev = [
 release = [
     "boto3>=1.43.99",
 ]
-# OakInk2 toolkit lives outside the resolver; install manually after
-# `uv sync` if you need the oakinkv2 dataset processor:
-#   uv pip install /path/to/OakInk2
-#
-# Optional 21-joint MANO skeleton in the viser viewer requires manotorch +
-# the gated MANO model files (mano.is.tue.mpg.de). manotorch's setup.py pins
-# an unbuildable opencv-python so it cannot live in the uv resolver; install
-# manually after `uv sync --extra oakinkv2`:
-#
-#   uv pip install pip
-#   uv pip install --no-build-isolation \
-#       'chumpy @ git+https://github.com/mattloper/chumpy@9b045ff5d6588a24a0bab52c83f032e2ba433e17'
-#   uv pip install --no-deps git+https://github.com/lixiny/manotorch.git
-#
-# Then place MANO_LEFT.pkl + MANO_RIGHT.pkl under <root>/models/ and pass
-# --mano-assets-root=<root> to the processor.
-
 [tool.ruff]
 # Same as Black.
 line-length = 88

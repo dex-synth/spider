@@ -17,9 +17,10 @@ from spider.optimizers.sampling import (
 )
 from spider.simulators import mjwp
 
-from .bundle import arrays, load_prepared
+from .bundle import arrays, load_prepared, load_task, read_json
 from .model import Layout
 from .reference import sample_reference
+from .scene import planning_model
 from .settings import settings, validate_clock
 from .tracking import Tracking, load_parameters, save_parameters
 
@@ -27,11 +28,12 @@ from .tracking import Tracking, load_parameters, save_parameters
 class Controller:
     """One episode's planning worlds, rolling controls and isolated random stream."""
 
-    def __init__(self, prepared, task, device, seed):
+    def __init__(self, prepared, task_path, device, seed):
         started = time.perf_counter()
         if torch.device(device).type != "cuda":
             raise ValueError("SPIDER H2R MPC requires a CUDA device for MJWarp")
         prepared = Path(prepared)
+        task = load_task(task_path)
         self.binding = load_prepared(prepared, task)
         self.task = task
         self.source = arrays(prepared / "trajectory_kinematic.npz")
@@ -41,12 +43,10 @@ class Controller:
         self.config = Config(
             embodiment_type="h2r",
             device=device,
-            model_path=str(prepared / self.binding["planning_scene"]),
             sim_dt=dt,
             ref_dt=dt,
             ctrl_dt=dt,
             use_torch_compile=False,
-            sanity_check_seconds=0,
             contact_guidance=False,
             contact_rew_scale=0,
             num_dr=1,
@@ -64,14 +64,16 @@ class Controller:
             raise ValueError(
                 "Horizon must be a positive integer number of control knots"
             )
-        model = mujoco.MjModel.from_xml_path(cfg.model_path)
+        model, _, _ = planning_model(
+            task_path, task, read_json(prepared / "calibration.json")
+        )
         cfg.nq, cfg.nv, cfg.nu, cfg.npair = model.nq, model.nv, model.nu, model.npair
         self.layout = Layout(model, task)
         self.tracking = Tracking(self.layout, cfg)
         compute_noise_schedule(cfg)
         cfg.env_params_list = [[{}] for _ in range(cfg.max_num_iterations)]
         initial = self.reference(0)
-        self.env = mjwp.setup_env(cfg, initial)
+        self.env = mjwp.setup_env(cfg, initial, model)
         self.data = mujoco.MjData(self.env.model_cpu)
         # The setup warm-up remains private; every external frame overwrites it.
         self.layout = Layout(self.env.model_cpu, task)
@@ -134,7 +136,7 @@ class Controller:
             mjwarp.forward(self.env.model_wp, self.env.data_wp)
 
     def advance(self):
-        """Execute the selected control in private MJWarp, as run_mjwp.py does."""
+        """Execute the selected control in the private MJWarp world."""
         cfg = self.config
         self.synchronize()
         mjwp.step_env(cfg, self.env, self.controls[0])

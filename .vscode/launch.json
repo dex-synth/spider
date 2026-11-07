@@ -9,19 +9,6 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "cwd": "${workspaceFolder}"
-        },
-        {
-            "name": "Python: Checker Example",
-            "type": "python",
-            "request": "launch",
-            "program": "${workspaceFolder}/examples/checker.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "cwd": "${workspaceFolder}",
-            "args": [
-                "--cfg_path",
-                "examples.configs.checker"
-            ]
         }
     ]
 }

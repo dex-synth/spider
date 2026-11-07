@@ -1,6 +1,6 @@
 # h2r_bench bundle 与统一评估
 
-每个序列依次运行 `spider.h2r.prepare` 和 `spider.h2r.plan` 一次，再用同一份封存的控制序列进行 h2r_bench `sim` 10 次与 `sim-dr` 10 次评估。`prepare` 读取共同物理 bundle、robot bundle 和固定 task，生成 IK 参考；`plan` 在 SPIDER 私有 MJWarp 世界中执行原生 sampling MPC，保存整条机器人位置目标。统一 eval 默认使用 MuJoCo，客户端只按共同 tick 回放控制，不重新规划。
+每个序列依次运行 `spider.h2r.prepare` 和 `spider.h2r.plan` 一次，再用同一份封存的控制序列进行 h2r_bench `sim` 10 次与 `sim-dr` 10 次评估。`prepare` 只读取 bench 分发的固定 task，生成 IK 参考；`plan` 在 SPIDER 私有 MJWarp 世界中执行原生 sampling MPC，保存整条机器人位置目标。统一 eval 默认使用 MuJoCo，客户端只按共同 tick 回放控制，不重新规划。
 
 算法、标定、规划与回放都在本仓库；bench 持有评估世界、初始化、时钟、终止和共同指标。部署方式记作 `offline-control-replay`。此入口属于显式 H2R 任务适配，不能当作原生 ARCTIC/XHand 配方或论文性能复现。
 
@@ -14,7 +14,7 @@ bash scripts/h2r_environment.sh /path/to/spider-env
 
 脚本安装 `.[h2r]`（显式声明 SciPy、PyYAML、DAQP），保持 MuJoCo 3.7.0、mujoco-warp 3.7.0.1、Warp 1.12.1、Torch 2.7.1、Mink 1.1.0。完整约束见 `scripts/h2r_runtime_constraints.txt`；它是当前 CUDA 12 配方，与原生 `uv.lock` 的默认平台解析分开。已有容器可直接使用 `/opt/h2r/spider/bin/python`，无需重装。
 
-此入口使用 bundle 中已解码的 MANO joints 与原始 root rotation，不读取原始数据集或 MANO 模型。运行旧 raw-data processor 时才设置 `H2R_INSTALL_RAW_DATA=1` 安装 manotorch/Chumpy。
+此入口使用 bundle 中已解码的 MANO joints 与原始 root rotation，不读取原始数据集或 MANO 模型。原生 raw-data processors、自带机器人资产与场景生成入口已移除。
 
 ## 准备与部署
 
@@ -29,8 +29,7 @@ h2r-bench prepare-metrics task="$TASK" output="$SPEC"
 然后在 SPIDER 环境准备：
 
 ```bash
-python -m spider.h2r.prepare --human-bundle "$HUMAN" --robot-bundle "$ROBOT" \
-  --task "$TASK" --output "$PREPARED"
+python -m spider.h2r.prepare --task "$TASK" --output "$PREPARED"
 ```
 
 可选 `--config recipe.yaml` 覆盖 `ik` 或 `mpc` 的字段；字段及默认值见 `spider/h2r/settings.py`，未知字段会报错。配置改变需要新的 prepared 目录。初始化碰撞检查失败时保留诊断，但不生成可部署的 `h2r_binding.json`。
@@ -39,12 +38,18 @@ python -m spider.h2r.prepare --human-bundle "$HUMAN" --robot-bundle "$ROBOT" \
 | --- | --- |
 | `trajectory_keypoints.npz` | 同一时间轴上的 wrist 与 fingertip targets |
 | `trajectory_kinematic.npz` | 全部源帧的 `time_s/qpos/qvel/ctrl`；ctrl 按 actuator 顺序 |
-| `planning/` | 共同任务场景与资源，仅增加 tracking sites |
 | `initial_robot.json`、`initialization.json` | 具名零速度初态提案与穿透检查 |
 | `resolved_config.yaml`、`calibration.json` | 实际配方与 Sharpa wrist 标定 |
 | `h2r_binding.json` | task/bundle/robot 身份、方法版本及产物 hash |
 
-保留完整目录，可整体搬移；runtime 不依赖原始 human/robot 路径，但仍需匹配的 task。封存后不能直接修改其中的文件。
+prepared 只含方法参考、标定、配置与初态，可整体搬移；规划与在线诊断必须同时提供匹配的 task。
+`scene.planning_model` 在每次构建前重新验证 task 的身份和文件闭包，直接在内存中添加 tracking sites。
+不读取 prepared 中的任何场景，不提供 `--model-path`、机器人资产或物体物理覆盖参数。
+
+准备和计划格式分别为 `spider-h2r-v2`、`spider-h2r-plan-v2`。旧版本因携带独立 planning scene 而不再接受，
+需要从 bench task 重新运行 prepare 和 plan；不能靠修改格式字段迁移旧目录。
+任务目录应由运行方以只读方式提供，评估服务固定其选择的 `task_id`。
+文件 hash 校验用于内容一致性，不是来源签名，也不构成共享文件系统上的进程隔离。
 
 在 SPIDER 环境对完整序列规划一次，规划 seed 与后续 eval seeds 分开：
 
@@ -87,7 +92,7 @@ h2r-bench summarize-evaluations --batch "$BATCH"
 
 - 复用 `preprocess/ik_fast.py` 的 wrist/fingertip/posture tasks 和 DAQP 求解。冻结全部非机器人 DoF，保留全部帧与物体。当前配方不启用 collision-constrained IK；初态仍接受共同碰撞检查，不能通过移动物体或放宽阈值部署。
 - 首批标定为 `virtual_wrist_sharpa_wave_bimanual` 与 `virtual_wrist_sharpa_wave_right`。腕部六个标量关节经真实运动学 IK 求解；机器人关节顺序与 actuator 顺序分别映射。其他机器人在 prepare 阶段明确拒绝。
-- 支持物理 bundle/task v1/v2/v3 的具名单/多 free root、被动 hinge 与固定环境；仅接受 unit-gear、无执行器内部动态的独立位置 actuator。遗漏动态关节、额外 actuator、缺失观测、身份或时钟不匹配会报错。
+- 支持 task v1/v2/v3 的具名单/多 free root、被动 hinge 与固定环境；读取 bench 装配后展开的 MJCF，拒绝 include、外部 model/plugin 及隐式资源目录；仅接受 unit-gear、无执行器内部动态的独立位置 actuator。遗漏动态关节、额外 actuator、缺失观测、身份或时钟不匹配会报错。
 - 默认开发配方为 128 样本、2 iterations、0.4 s horizon、0.1 s knot、8 个物理子步。动作周期与 task 的共同控制周期相同，每个目标在全部子步保持；仅私有规划过程逐步重规划，eval 复用固定控制。horizon/knot 必须落在共同控制网格上。
 - 原生 sampling optimizer、加权 qpos 范数、qvel 项及 terminal multiplier 保持不变；按名字配置 wrist/finger/object 权重与噪声，被动 hinge 使用 object rotation 权重。所有动态物体都参与私有跟踪，包括 context 物体。
 - 关闭 contact guidance/reward；`num_dr=1`，规划使用 nominal 参数。保留共同模型的质量、几何、弹簧、重力补偿与伺服；只按配置改变私有积分 timestep，不继承原生 hand 模式的 solver/contact 重写。评估 `sim-dr` 的扰动留在 bench，离线控制不对观测扰动作 MPC 修正。
@@ -110,8 +115,13 @@ python -m unittest discover -s tests -p 'test_h2r*.py' -v
 
 ## 显式在线诊断
 
-旧 `evaluation --prepared PREPARED --device cuda:0` 仍可显式运行在线 MPC，每个 eval episode 根据真实观测重新规划。`spider.h2r.check` 只适用于这种在线名义记录。此模式与默认的一次规划／重复回放分开记录，不能混报成绩。
+`evaluation --prepared PREPARED --device cuda:0` 仍可显式运行在线 MPC，每个 eval episode 根据真实观测重新规划。`spider.h2r.check` 只适用于这种在线名义记录。此模式与默认的一次规划／重复回放分开记录，不能混报成绩。
 
-## 历史入口
+## 任务与模型边界检查
 
-旧 `scripts/h2r_prepare_arctic.py`、`h2r_controller_server.py` 与 Leap wrench/JSON-lines 协议只用于历史产物，见 [h2r-legacy.md](h2r-legacy.md)。它们不兼容当前统一 eval；旧 viewer/check 脚本也不用于上述新 prepared 格式。
+测试覆盖 task 资源篡改、重新封存后的任务身份变化、prepared 添加模型／路径或伪造 hash、
+包外依赖与 XML 隐式资源目录拒绝。数值检查对照原 task 编译模型，确认 tracking sites 与规划 timestep
+不会改变质量惯量、关节、碰撞、mesh、执行器或共同 solver 参数。
+
+历史 Leap wrench、JSON-lines 协议、原生数据集／场景生成及 `spider-mjwp` 入口已移除。
+原生复现使用上游 checkout；已有运行记录不在本次代码迁移中改写。
