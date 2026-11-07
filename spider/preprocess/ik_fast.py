@@ -128,6 +128,40 @@ def _build_ref_skeleton(server, mano_assets_root, qpos_ref, ref_idx, embodiment_
     return update
 
 
+def make_tasks(
+    configuration, wrist_sites, finger_sites, *, wrist_pos_cost=0.3,
+    wrist_ori_cost=3.0, finger_pos_cost=10.0, posture_cost=1e-2,
+):
+    """Build the native wrist, fingertip and posture objective for either entrypoint."""
+    wrists = [
+        mink.FrameTask(
+            frame_name=site, frame_type="site", position_cost=wrist_pos_cost,
+            orientation_cost=wrist_ori_cost, lm_damping=1.0,
+        )
+        for site in wrist_sites
+    ]
+    fingers = [
+        mink.FrameTask(
+            frame_name=site, frame_type="site", position_cost=finger_pos_cost,
+            orientation_cost=0.0, lm_damping=1.0,
+        )
+        for site in finger_sites
+    ]
+    posture = mink.PostureTask(configuration.model, cost=posture_cost)
+    posture.set_target(configuration.q.copy())
+    return wrists, fingers, posture
+
+
+def solve_velocity(configuration, tasks, dt, *, max_step_norm=None, **options):
+    """Solve one native Mink update, optionally bounding its displacement."""
+    velocity = mink.solve_ik(configuration, tasks, dt, "daqp", damping=1e-5, **options)
+    if max_step_norm is not None:
+        if max_step_norm <= 0:
+            raise ValueError("max_step_norm must be positive")
+        velocity *= min(1.0, max_step_norm / max(np.linalg.norm(velocity) * dt, 1e-30))
+    return velocity
+
+
 def main(
     dataset_dir: str = f"{ROOT}/../example_datasets",
     dataset_name: str = "oakink",
@@ -321,35 +355,15 @@ def main(
 
     # Create IK tasks
     # Cost priority: finger_pos > wrist_pos > wrist_ori
-    wrist_tasks = [
-        mink.FrameTask(
-            frame_name=s,
-            frame_type="site",
-            position_cost=wrist_pos_cost,
-            orientation_cost=wrist_ori_cost,
-            lm_damping=1.0,
-        )
-        for s in wrist_sites
-    ]
-
-    finger_tasks = [
-        mink.FrameTask(
-            frame_name=s,
-            frame_type="site",
-            position_cost=finger_pos_cost,
-            orientation_cost=0.0,
-            lm_damping=1.0,
-        )
-        for s in finger_sites
-    ]
-
-    posture_task = mink.PostureTask(model, cost=posture_cost)
-    posture_task.set_target(configuration.q.copy())
+    wrist_tasks, finger_tasks, posture_task = make_tasks(
+        configuration, wrist_sites, finger_sites, wrist_pos_cost=wrist_pos_cost,
+        wrist_ori_cost=wrist_ori_cost, finger_pos_cost=finger_pos_cost,
+        posture_cost=posture_cost,
+    )
 
     tasks_wrist = [posture_task, *wrist_tasks]
     tasks_all = [posture_task, *wrist_tasks, *finger_tasks]
 
-    solver = "daqp"
     n_substeps = max(1, int(round(ref_dt / sim_dt)))
     solve_options = {}
     if collision_avoidance:
@@ -365,13 +379,9 @@ def main(
         solve_options["constraints"] = [mink.DofFreezingTask(model, list(range(model.nv-7, model.nv)))]
 
     def solve(tasks):
-        velocity = mink.solve_ik(configuration, tasks, sim_dt, solver, damping=1e-5, **solve_options)
-        if max_step_norm is not None:
-            if max_step_norm <= 0:
-                raise ValueError("max_step_norm must be positive")
-            # Optional task variant: bound one local linearization update.
-            velocity *= min(1., max_step_norm / max(np.linalg.norm(velocity)*sim_dt, 1e-30))
-        return velocity
+        return solve_velocity(
+            configuration, tasks, sim_dt, max_step_norm=max_step_norm, **solve_options
+        )
 
     # -- Helpers --
     def set_object_qpos(t):

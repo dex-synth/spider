@@ -61,6 +61,11 @@ warp-lang = { index = "nvidia" }
 packages = ["spider"]
 
 [project.optional-dependencies]
+h2r = [
+  "scipy",
+  "pyyaml",
+  "daqp",
+]
 dev = [
   "ruff>=0.13.2",
 ]

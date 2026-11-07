@@ -8,9 +8,11 @@ uv pip install --python "$prefix/bin/python" --index-strategy unsafe-best-match 
   --constraint "$repo/scripts/h2r_runtime_constraints.txt" \
   --index https://pypi.nvidia.com \
   --default-index https://pypi.org/simple \
-  -e "$repo" 'torch==2.7.1' 'pandas>=2,<3'
+  -e "${repo}[h2r]" 'torch==2.7.1' 'pandas>=2,<3'
 
 # ARCTIC's native processor uses manotorch and legacy Chumpy pickles.
+# Decoded H2R bundles do not need these raw-dataset dependencies.
+if [ "${H2R_INSTALL_RAW_DATA:-0}" != 1 ]; then exit 0; fi
 # manotorch pins an obsolete OpenCV wheel: use the already-resolved modern one.
 uv pip install --python "$prefix/bin/python" --constraint "$repo/scripts/h2r_runtime_constraints.txt" 'setuptools<81' pip
 uv pip install --python "$prefix/bin/python" --constraint "$repo/scripts/h2r_runtime_constraints.txt" --no-build-isolation 'chumpy==0.70'

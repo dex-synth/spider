@@ -2935,6 +2935,11 @@ dependencies = [
 dev = [
     { name = "ruff" },
 ]
+h2r = [
+    { name = "daqp" },
+    { name = "pyyaml" },
+    { name = "scipy" },
+]
 release = [
     { name = "boto3" },
 ]
@@ -2942,6 +2947,7 @@ release = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", marker = "extra == 'release'", specifier = ">=1.43.99" },
+    { name = "daqp", marker = "extra == 'h2r'" },
     { name = "google-auth" },
     { name = "gspread" },
     { name = "huggingface-hub" },
@@ -2960,14 +2966,16 @@ requires-dist = [
     { name = "open3d" },
     { name = "opencv-python" },
     { name = "pymeshlab", specifier = "<2025" },
+    { name = "pyyaml", marker = "extra == 'h2r'" },
     { name = "rerun-sdk", specifier = "==0.26.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13.2" },
+    { name = "scipy", marker = "extra == 'h2r'" },
     { name = "torch" },
     { name = "tyro" },
     { name = "viser" },
     { name = "warp-lang", specifier = "==1.12.1", index = "https://pypi.nvidia.com/" },
 ]
-provides-extras = ["dev", "release"]
+provides-extras = ["h2r", "dev", "release"]
 
 [[package]]
 name = "stack-data"

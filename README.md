@@ -40,6 +40,10 @@
 
 Scalable Physics-Informed DExterous Retargeting (SPIDER) is a general framework for physics-based retargeting from human to diverse robot embodiments, including both dexterous hand and humanoid robot.
 It is designed to be a minimum, flexible and extendable framework for human2robot retargeting.
+
+For h2r_bench preprocessing bundles and independent MuJoCo evaluation with MJWarp MPC,
+see the [H2R integration guide](docs/h2r.md).
+
 This code base provides the following pipeline from human video to robot actions:
 
 ![pipeline](figs/pipeline_animation.gif)

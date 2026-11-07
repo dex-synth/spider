@@ -135,6 +135,8 @@ class Config:
     exploit_noise_scale: float = 0.01
     # Noise scaling by component
     joint_noise_scale: float = 0.15
+    # Optional explicit native-actuator ordering (external named-model tasks).
+    actuator_noise_scales: list[float] = field(default_factory=list)
     pos_noise_scale: float = 0.03
     rot_noise_scale: float = 0.03
     # Reward mode
@@ -354,7 +356,16 @@ def get_noise_scale(config: Config) -> torch.Tensor:
         base=10,
     )[None, :, None]  # Shape: (1, num_knot_steps, 1)
     noise_scale = noise_scale.repeat(1, 1, config.nu)
-    if config.embodiment_type in ["bimanual", "right", "left", "floating_hand_articulated"]:
+    if config.actuator_noise_scales:
+        scales = torch.as_tensor(config.actuator_noise_scales, device=config.device)
+        if (
+            scales.shape != (config.nu,)
+            or not torch.isfinite(scales).all()
+            or (scales < 0).any()
+        ):
+            raise ValueError("Expected one finite nonnegative noise scale per actuator")
+        noise_scale *= scales
+    elif config.embodiment_type in ["bimanual", "right", "left", "floating_hand_articulated"]:
         object_action_dims = max(int(config.object_action_dims), 0)
         robot_nu = max(int(config.nu - object_action_dims), 0)
         noise_scale[:, :, :3] *= config.pos_noise_scale
