@@ -161,9 +161,9 @@ PREPARED_FILES = {
 
 def validate_prepared(binding, task):
     """Accept method artifacts without any method-supplied physical model."""
-    if binding.get("format") != "spider-h2r-v2":
+    if binding.get("format") != "spider-h2r-v3":
         raise ValueError(
-            "Regenerate SPIDER preparation from --task (requires spider-h2r-v2)"
+            "Regenerate SPIDER preparation from --task (requires spider-h2r-v3)"
         )
     for key in ("task_id", "bundle_id", "scene_id", "robot_manifest_sha256"):
         if binding[key] != task[key]:

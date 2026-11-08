@@ -39,19 +39,13 @@ class Controller:
         self.source = arrays(prepared / "trajectory_kinematic.npz")
         options = settings(prepared / "resolved_config.yaml")["mpc"]
         validate_clock(options, task)
-        dt = task["dt_s"] * task["control_ticks"]
         self.config = Config(
             embodiment_type="h2r",
             device=device,
-            sim_dt=dt,
-            ref_dt=dt,
-            ctrl_dt=dt,
-            use_torch_compile=False,
             contact_guidance=False,
             contact_rew_scale=0,
             num_dr=1,
             num_dyn=1,
-            improvement_threshold=0.0,
             **options,
         )
         cfg = self.config
@@ -75,7 +69,7 @@ class Controller:
         initial = self.reference(0)
         self.env = mjwp.setup_env(cfg, initial, model)
         self.data = mujoco.MjData(self.env.model_cpu)
-        # The setup warm-up remains private; every external frame overwrites it.
+        # Discard private setup warm-up at the first real initial/observed state.
         self.layout = Layout(self.env.model_cpu, task)
         rollout = make_rollout_fn(
             mjwp.step_env,
@@ -96,6 +90,8 @@ class Controller:
         self.cuda_rng = torch.Generator(device=device).manual_seed(seed).get_state()
         self.cpu_rng = torch.Generator().manual_seed(seed).get_state()
         self.controls = None
+        self.chunk_start = None
+        self.current_ctrl = None
         self.tick = 0
         self.setup_s = time.perf_counter() - started
 
@@ -115,9 +111,30 @@ class Controller:
         return tuple(result)
 
     def control(self, frame, joint_names):
-        """Replan at each external control tick, returning named robot targets only."""
+        """Use real observations at replan boundaries; publish a held native action."""
+        tick, now = frame["tick"], frame["time_s"]
+        ratio = self.config.ctrl_dt / (self.task["dt_s"] * self.task["control_ticks"])
+        if not np.isclose(ratio, round(ratio), rtol=0, atol=1e-9):
+            raise ValueError("Online replans must fall on the evaluation control grid")
+        if (
+            type(tick) is not int
+            or tick != self.tick
+            or tick >= self.task["end_tick"]
+            or not np.isfinite(now)
+            or not np.isclose(now, tick * self.task["dt_s"], rtol=0, atol=1e-9)
+        ):
+            raise ValueError("Stale or inconsistent evaluation clock")
         self.layout.write_observation(self.data, frame, joint_names)
-        return self.optimize_current(frame["tick"], frame["time_s"])
+        step = int(np.floor(now / self.config.sim_dt + 1e-9))
+        targets, diagnostic = self.action(step, external=True)
+        self.tick += self.task["control_ticks"]
+        return targets, {
+            **diagnostic,
+            "tick": tick,
+            "time_s": now,
+            "planning_qpos": self.data.qpos.tolist(),
+            "planning_qvel": self.data.qvel.tolist(),
+        }
 
     def synchronize(self):
         """Copy the current physical state into every private candidate world."""
@@ -136,65 +153,73 @@ class Controller:
             mjwarp.forward(self.env.model_wp, self.env.data_wp)
 
     def advance(self):
-        """Execute the selected control in the private MJWarp world."""
+        """Execute one native action, preserving the world's solver state."""
         cfg = self.config
-        self.synchronize()
-        mjwp.step_env(cfg, self.env, self.controls[0])
+        mjwp.step_env(cfg, self.env, self.current_ctrl)
         self.data.qpos[:] = mjwp.get_qpos(cfg, self.env)[0].detach().cpu().numpy()
         self.data.qvel[:] = mjwp.get_qvel(cfg, self.env)[0].detach().cpu().numpy()
-        self.data.ctrl[:] = self.controls[0].detach().cpu().numpy()
+        self.data.ctrl[:] = self.current_ctrl.detach().cpu().numpy()
+        expected = self.data.time + cfg.sim_dt
         clock = float(wp.to_torch(self.env.data_wp.time)[0].item())
-        expected = self.tick * self.task["dt_s"]
         if (
             not np.isfinite(self.data.qpos).all()
             or not np.isfinite(self.data.qvel).all()
         ):
             raise ValueError("Non-finite private planning state")
-        # MJWarp stores time in float32; accumulated substep rounding grows with
-        # absolute time even though each planning interval starts at the fixed tick.
-        clock_atol = max(
-            1e-5, 2 * cfg.physics_substeps * float(np.spacing(np.float32(expected)))
-        )
-        if not np.isclose(clock, expected, rtol=0, atol=clock_atol):
+        # Native float32 accumulation is diagnostic only; action indices use the
+        # integer step counter. No reset/forward between actions in a chunk.
+        if not np.isclose(clock, expected, rtol=2e-4, atol=1e-5):
             raise ValueError("Private planning physics clock changed")
         self.data.time = expected
         mujoco.mj_forward(self.env.model_cpu, self.data)
 
-    def optimize_current(self, tick, now):
-        """Optimize from the current physical state with the native sampling loop."""
+    def action(self, step, *, external=False):
+        """Ordinary run_mjwp loop: optimize, execute ctrl_steps, shift that chunk."""
         cfg = self.config
-        if (
-            type(tick) is not int
-            or tick != self.tick
-            or tick >= self.task["end_tick"]
-            or not np.isfinite(now)
-            or not np.isclose(now, tick * self.task["dt_s"], rtol=0, atol=1e-9)
-        ):
-            raise ValueError("Stale or inconsistent evaluation clock")
-        start = time.perf_counter()
-        self.synchronize()
-        reference = self.reference(now)
-        if self.controls is None:
-            self.controls = reference[2][:-1].clone()
-        else:
-            self.controls = torch.cat((self.controls[1:], reference[2][-2:-1]))
-        with torch.random.fork_rng(devices=[self.device_index]):
-            torch.set_rng_state(self.cpu_rng)
-            torch.cuda.set_rng_state(self.cuda_rng, self.device_index)
-            self.controls, info = self.optimize(
-                cfg, self.env, self.controls, tuple(value[1:] for value in reference)
-            )
-            self.cpu_rng = torch.get_rng_state()
-            self.cuda_rng = torch.cuda.get_rng_state(self.device_index)
-        targets = self.layout.targets(self.controls[0].detach().cpu().numpy())
-        self.tick += self.task["control_ticks"]
-        diagnostic = {
-            "tick": tick,
-            "time_s": now,
-            "compute_s": time.perf_counter() - start,
-            "setup_s": self.setup_s if tick == 0 else 0.0,
-            "opt_steps": info["opt_steps"].tolist(),
-            "planning_qpos": self.data.qpos.tolist(),
-            "planning_qvel": self.data.qvel.tolist(),
+        started = time.perf_counter()
+        replan = self.chunk_start is None or step - self.chunk_start >= cfg.ctrl_steps
+        info = {"opt_steps": []}
+        if replan:
+            if (
+                self.chunk_start is not None
+                and step - self.chunk_start != cfg.ctrl_steps
+            ):
+                raise ValueError("Skipped native replanning boundary")
+            if external or self.chunk_start is None:
+                self.synchronize()
+            else:
+                mjwp.sync_env(cfg, self.env, self.data)
+            reference = self.reference(step * cfg.sim_dt)
+            if self.controls is None:
+                self.controls = reference[2][:-1].clone()
+            else:
+                # Native runner appends [new_time + remaining : + ctrl_steps].
+                remaining = cfg.horizon_steps - cfg.ctrl_steps
+                self.controls = torch.cat(
+                    (self.controls[cfg.ctrl_steps :], reference[2][remaining:-1])
+                )
+            with torch.random.fork_rng(devices=[self.device_index]):
+                torch.set_rng_state(self.cpu_rng)
+                torch.cuda.set_rng_state(self.cuda_rng, self.device_index)
+                self.controls, info = self.optimize(
+                    cfg,
+                    self.env,
+                    self.controls,
+                    tuple(value[1:] for value in reference),
+                )
+                self.cpu_rng = torch.get_rng_state()
+                self.cuda_rng = torch.cuda.get_rng_state(self.device_index)
+            self.chunk_start = step
+        self.current_ctrl = self.controls[step - self.chunk_start]
+        targets = self.layout.targets(self.current_ctrl.detach().cpu().numpy())
+        opt_steps = info["opt_steps"]
+        return targets, {
+            "native_step": step,
+            "time_s": step * cfg.sim_dt,
+            "replanned": replan,
+            "compute_s": time.perf_counter() - started,
+            "setup_s": self.setup_s if step == 0 else 0.0,
+            "opt_steps": opt_steps.tolist()
+            if hasattr(opt_steps, "tolist")
+            else opt_steps,
         }
-        return targets, diagnostic

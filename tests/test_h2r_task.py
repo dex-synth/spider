@@ -181,7 +181,7 @@ class TaskTests(unittest.TestCase):
                         "robot_manifest_sha256",
                     )
                 },
-                "format": "spider-h2r-v2",
+                "format": "spider-h2r-v3",
                 "model_source": "task",
                 "files": {name: digest(root / name) for name in PREPARED_FILES},
             }

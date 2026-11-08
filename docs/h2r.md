@@ -32,7 +32,7 @@ h2r-bench prepare-metrics task="$TASK" output="$SPEC"
 python -m spider.h2r.prepare --task "$TASK" --output "$PREPARED"
 ```
 
-可选 `--config recipe.yaml` 覆盖 `ik` 或 `mpc` 的字段；字段及默认值见 `spider/h2r/settings.py`，未知字段会报错。配置改变需要新的 prepared 目录。初始化碰撞检查失败时保留诊断，但不生成可部署的 `h2r_binding.json`。
+可选 `--config recipe.yaml` 覆盖 `ik` 或 `mpc` 的字段；字段及默认值见 `spider/h2r/settings.py`，未知字段会报错。配置改变需要新的 prepared 目录。初始化关节限位或碰撞检查失败时保留诊断，但不生成可部署的 `h2r_binding.json`。
 
 | 产物 | 用途 |
 | --- | --- |
@@ -46,7 +46,7 @@ prepared 只含方法参考、标定、配置与初态，可整体搬移；规�
 `scene.planning_model` 在每次构建前重新验证 task 的身份和文件闭包，直接在内存中添加 tracking sites。
 不读取 prepared 中的任何场景，不提供 `--model-path`、机器人资产或物体物理覆盖参数。
 
-准备和计划格式分别为 `spider-h2r-v2`、`spider-h2r-plan-v2`。旧版本因携带独立 planning scene 而不再接受，
+准备和计划格式分别为 `spider-h2r-v3`、`spider-h2r-plan-v3`。v1 携带独立 planning scene，v2 使用旧 fast IK／逐 tick 规划，均不再接受，
 需要从 bench task 重新运行 prepare 和 plan；不能靠修改格式字段迁移旧目录。
 任务目录应由运行方以只读方式提供，评估服务固定其选择的 `task_id`。
 文件 hash 校验用于内容一致性，不是来源签名，也不构成共享文件系统上的进程隔离。
@@ -59,7 +59,7 @@ CUDA_VISIBLE_DEVICES="$GPU" python -m spider.h2r.plan \
   --seed 0 --device cuda:0
 ```
 
-规划复用原生 optimizer 和 `mjwp.step_env`，在私有仿真中滚动优化并执行选定控制。仅初始时设置共同物体姿态、IK 机器人初态与零速度；之后物体通过私有物理推进，不按参考逐帧重置。输出 `trajectory_mjwp.npz` 的 `ticks/time_s/joint_targets/ctrl` 是已选定控制，`qpos/qvel` 与 `planning.jsonl` 仅作规划诊断。`plan.json` 记录完整任务网格、规划 seed、配方、版本、耗时、输入身份和文件哈希；失败或中断不产生可部署的完整 manifest。
+规划复用原生 optimizer 和 `mjwp.step_env`，在私有仿真中滚动优化并执行选定控制。仅初始时设置共同物体姿态、IK 机器人初态与零速度；之后物体通过私有物理推进，不按参考逐帧重置。输出 `trajectory_mjwp.npz` 的 `ticks/time_s/joint_targets/ctrl` 是已选定控制，`native_*` 保存原生网格轨迹；`source_time_s` 标记所取原生帧。`qpos/qvel` 是该原生帧的诊断状态，不冒充发布时刻的评估状态；`planning.jsonl` 记录优化触发与轮数。`plan.json` 记录完整任务网格、规划 seed、配方、版本、耗时、输入身份和文件哈希；失败或中断不产生可部署的完整 manifest。
 
 20 次 eval 必须全部引用同一个 `PLAN`，不按 eval seed 重新运行 `plan`。
 
@@ -90,14 +90,27 @@ h2r-bench summarize-evaluations --batch "$BATCH"
 
 ## 适配配方与边界
 
-- 复用 `preprocess/ik_fast.py` 的 wrist/fingertip/posture tasks 和 DAQP 求解。冻结全部非机器人 DoF，保留全部帧与物体。当前配方不启用 collision-constrained IK；初态仍接受共同碰撞检查，不能通过移动物体或放宽阈值部署。
-- 首批标定为 `virtual_wrist_sharpa_wave_bimanual` 与 `virtual_wrist_sharpa_wave_right`。腕部六个标量关节经真实运动学 IK 求解；机器人关节顺序与 actuator 顺序分别映射。其他机器人在 prepare 阶段明确拒绝。
-- 支持 task v1/v2/v3 的具名单/多 free root、被动 hinge 与固定环境；读取 bench 装配后展开的 MJCF，拒绝 include、外部 model/plugin 及隐式资源目录；仅接受 unit-gear、无执行器内部动态的独立位置 actuator。遗漏动态关节、额外 actuator、缺失观测、身份或时钟不匹配会报错。
-- 默认开发配方为 128 样本、2 iterations、0.4 s horizon、0.1 s knot、8 个物理子步。动作周期与 task 的共同控制周期相同，每个目标在全部子步保持；仅私有规划过程逐步重规划，eval 复用固定控制。horizon/knot 必须落在共同控制网格上。
-- 原生 sampling optimizer、加权 qpos 范数、qvel 项及 terminal multiplier 保持不变；按名字配置 wrist/finger/object 权重与噪声，被动 hinge 使用 object rotation 权重。所有动态物体都参与私有跟踪，包括 context 物体。
-- 关闭 contact guidance/reward；`num_dr=1`，规划使用 nominal 参数。保留共同模型的质量、几何、弹簧、重力补偿与伺服；只按配置改变私有积分 timestep，不继承原生 hand 模式的 solver/contact 重写。评估 `sim-dr` 的扰动留在 bench，离线控制不对观测扰动作 MPC 修正。
-- 以真实 tick 采样未来参考，freejoint quaternion 用 SLERP，速度在相同网格上做流形差分。末尾 hold/零速度仅供私有 horizon，bench 的终点不变。
-- 同一序列只有一个规划 seed 与控制序列；eval seed 不改变规划 RNG 或控制。终止 episode 不再发动作。文件身份、控制网格不完整或非有限目标在连接 eval 前拒绝。
+固定上游 `44717007de41cbef7565dff7ff9f4453557a2d3d`，采用论文 `preprocess/ik.py` → 普通 `examples/run_mjwp.py` 路线。配置来自 `examples/config/default.yaml`，torch.compile 来自 `Config` 默认；不混入 fast optimizer、best-sample、retry 或 revert。该 revision 没有 HOT3D `_origin` 配方，因此这里是“论文入口 + 官方通用配方的共同任务适配”，不是 HOT3D 官方成绩复现。
+
+| 时钟／预算 | 默认 |
+| --- | --- |
+| IK 积分／目标采样 | 200 Hz／50 Hz |
+| MPC 控制采样／私有积分 | 100 Hz／100 Hz |
+| MPC 重规划／horizon／knot | 0.4 s／1.6 s／0.4 s |
+| 样本／最多迭代／提前停止 | 1024／32／improvement < 0.01，patience=1 |
+| temperature／torch.compile | 0.1／开启 |
+| 共同评估积分／控制发布 | 按 task；既有 HOT3D 为 240 Hz／30 Hz |
+
+私有积分保留与原生 100 Hz 动作网格精确兼容的 100 Hz，不将新接入的一般 120 Hz 默认强套到该网格。每次优化后执行 40 个原生控制，再移窗 40 步；优化参考从下一步开始。零阶保持将原生控制采样到共同发布时刻，覆盖全部任务 ticks，不改变任务速度或终点。30 Hz 发布不能执行全部 100 Hz 控制变化，这是明确的部署边界差异，不声称与原生 100 Hz 执行轨迹相同。
+
+- 论文 IK 保留 mocap wrist/object weld、finger connect、8 次随机初值与物理稳定性选择、逐帧求解、3 帧 valid 平均及差分后首帧丢弃。不增加碰撞避免、速度约束或新腕姿态算法。IK RNG 独立固定，默认 seed=0；原 CLI 未固定该 seed。
+- 共同输入插值到 50 Hz 目标网格，最后不足一帧时只在私有参考中保持端点。平滑输出按窗口中心时间定位，再对应差分后的下一帧；前后端点保持覆盖完整共同任务。原生未平滑结果、有效过滤结果及时间均存入 `trajectory_kinematic.npz`。MPC 直接采样有效过滤结果，避免先降到共同网格再升采样。
+- 原生读取器按数组长度插值并重新从零计时；这里按物理时间插值机器人标量位置及原生差分速度，物体 freejoint 用 SLERP 并保持共同目标。端点保持区速度为零。共同物体目标不被 IK 结果或算术四元数平滑覆盖，被动 hinge 参考也原样保留。
+- 初态由 IK 提议，评估仍为零速度、无额外 warm-up；关节限位／穿透准入失败会保存 `initialization.json`，不生成可部署 binding。原生 IK 数值不稳定、无避碰保证等限制不通过适配修改。
+- 标定支持 `virtual_wrist_sharpa_wave_bimanual`、`virtual_wrist_sharpa_wave_right`。支持 task v1/v2/v3 的具名单／多 free root、被动 hinge 与固定环境。关节与 actuator 独立映射；仅接受 unit-gear、无内部动态的独立位置 actuator。缺失映射、观测或身份不匹配直接报错。
+- 原生 sampling、reward 和噪声公式保持；按名字映射 wrist/finger/object 权重，被动 hinge 使用 object rotation 权重。全部动态物体参与跟踪。保留原生 NaN 奖励／采样缺陷。
+- 通用入口关闭 contact guidance/reward，`num_dr=num_dyn=1`。MPC 保留共同模型质量、惯量、碰撞、弹簧、重力补偿与伺服；仅改变私有 timestep。容量保持 `nconmax=256`、`njmax=1024` 以容纳共同模型，不照搬小原生资产的 120／350。
+- prepared 与 plan 封存来源、配置及时间映射；更新配方必须重新 prepare／plan。默认每序列一个规划 seed；sim／sim-dr 复用同一控制，评估扰动不触发离线重规划。
 
 通信协议为 `h2r-evaluation-v1`：4-byte 大端长度 + JSON，`hello/start/frames/step`。仅返回 `joint_targets`，没有 root wrench、物体辅助力、评估 reset 或方法提前终止。每次 eval 的 binding 与控制日志记录相同 `plan_id`，规划耗时与 eval 耗时分别保存。
 
@@ -109,13 +122,13 @@ python -m unittest discover -s tests -p 'test_h2r*.py' -v
 
 回放测试覆盖 20 个独立 episode 的相同控制、扰动观测不影响输出、末尾不足一个控制周期、游标检查、不完整／非有限计划及文件篡改拒绝。
 
-边界测试覆盖乱序 actuator、多 root+hinge、body 原点速度、源姿态转换、端点、封存完整性和多 episode 终止。兼容单手布局下，原生与适配 reward/terminal reward、固定随机输入的控制采样逐值一致。
+边界测试覆盖乱序 actuator、多 root+hinge、body 原点速度、源姿态转换、端点、封存完整性和多 episode 终止。兼容单手布局下，原生与适配 reward/terminal reward、固定随机输入的控制采样逐值一致。新增回归覆盖私有 IK 约束、过滤有效时间、完整端点、多动作执行与移窗、下一步 lookahead、在线观测时机和非整比发布。
 
 历史在线 MPC 运行结果保留在 bench 的 `runs/checks/spider-h2r-20261107/` 及对应 evaluation batch 中，不代表离线控制回放结果。各数据集离线规划与物理评估的实际通过范围，以新批次运行记录为准。
 
 ## 显式在线诊断
 
-`evaluation --prepared PREPARED --device cuda:0` 仍可显式运行在线 MPC，每个 eval episode 根据真实观测重新规划。`spider.h2r.check` 只适用于这种在线名义记录。此模式与默认的一次规划／重复回放分开记录，不能混报成绩。
+`evaluation --prepared PREPARED --device cuda:0` 仍可显式运行在线 MPC，每个 eval episode 在 0.4 秒边界根据真实观测重新规划，期间发布已有控制。重规划边界必须精确落在共同发布网格上，否则拒绝；不会静默取整。`spider.h2r.check` 只适用于这种在线名义记录。此模式与默认的一次规划／重复回放分开记录，不能混报成绩。
 
 ## 任务与模型边界检查
 

@@ -349,7 +349,7 @@ class FileAndProtocolTests(unittest.TestCase):
             root = Path(tmp)
             write_json(
                 root / "h2r_binding.json",
-                {"format": "spider-h2r-v2", "task_id": "wrong"},
+                {"format": "spider-h2r-v3", "task_id": "wrong"},
             )
             with self.assertRaisesRegex(ValueError, "task_id"):
                 load_prepared(root, task)

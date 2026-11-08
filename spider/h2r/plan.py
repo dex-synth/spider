@@ -11,6 +11,7 @@ import mujoco
 import numpy as np
 
 from .bundle import digest, identity, load_prepared, load_task, write_json
+from .reference import hold_indices
 
 
 def plan(prepared, task_path, output, device, seed):
@@ -35,13 +36,14 @@ def plan(prepared, task_path, output, device, seed):
     controller.data.time = 0
     mujoco.mj_forward(controller.env.model_cpu, controller.data)
     rows = []
+    native_dt = controller.config.sim_dt
+    count = int(np.ceil(task["end_tick"] * task["dt_s"] / native_dt))
     with (output / "planning.jsonl").open("w") as log:
-        for tick in range(0, task["end_tick"], task["control_ticks"]):
-            targets, diagnostic = controller.optimize_current(tick, tick * task["dt_s"])
-            ctrl = controller.controls[0].detach().cpu().numpy().copy()
+        for step in range(count):
+            targets, diagnostic = controller.action(step)
+            ctrl = controller.current_ctrl.detach().cpu().numpy().copy()
             rows.append(
                 (
-                    tick,
                     list(targets.values()),
                     controller.data.qpos.copy(),
                     controller.data.qvel.copy(),
@@ -50,28 +52,39 @@ def plan(prepared, task_path, output, device, seed):
             )
             log.write(json.dumps(diagnostic, allow_nan=False) + "\n")
             log.flush()
-            if tick + task["control_ticks"] < task["end_tick"]:
+            if step + 1 < count:
                 controller.advance()
-            if len(rows) % 100 == 0:
+            if diagnostic["replanned"]:
                 print(
-                    f"Plan control {len(rows)}; tick {tick}/{task['end_tick']}",
+                    f"Plan native step {step}/{count}; "
+                    f"iterations {diagnostic['opt_steps']}",
                     flush=True,
                 )
-    ticks, targets, qpos, qvel, ctrl = map(np.asarray, zip(*rows, strict=True))
+    targets, qpos, qvel, ctrl = map(np.asarray, zip(*rows, strict=True))
+    native_times = np.arange(count) * native_dt
+    ticks = np.arange(0, task["end_tick"], task["control_ticks"], dtype=np.int64)
+    times = ticks * task["dt_s"]
+    indices = hold_indices(native_times, times)
     np.savez_compressed(
         output / "trajectory_mjwp.npz",
         ticks=ticks,
-        time_s=ticks * task["dt_s"],
-        joint_targets=targets,
-        qpos=qpos,
-        qvel=qvel,
-        ctrl=ctrl,
+        time_s=times,
+        joint_targets=targets[indices],
+        qpos=qpos[indices],
+        qvel=qvel[indices],
+        ctrl=ctrl[indices],
+        native_time_s=native_times,
+        native_joint_targets=targets,
+        native_qpos=qpos,
+        native_qvel=qvel,
+        native_ctrl=ctrl,
+        source_time_s=native_times[indices],
     )
     for name in ("initial_robot.json", "resolved_config.yaml"):
         shutil.copy2(prepared / name, output / name)
     repo = Path(__file__).resolve().parents[2]
     manifest = {
-        "format": "spider-h2r-plan-v2",
+        "format": "spider-h2r-plan-v3",
         "deployment": "offline-control-replay",
         "planning_backend": "mjwarp",
         "planning_seed": seed,
@@ -90,7 +103,16 @@ def plan(prepared, task_path, output, device, seed):
         "control_ticks": task["control_ticks"],
         "end_tick": task["end_tick"],
         "dt_s": task["dt_s"],
-        "controls": len(rows),
+        "controls": len(ticks),
+        "native_controls": count,
+        "clock_mapping": {
+            "native_action_dt_s": native_dt,
+            "replan_dt_s": controller.config.ctrl_dt,
+            "private_physics_dt_s": native_dt / controller.config.physics_substeps,
+            "publication_dt_s": task["dt_s"] * task["control_ticks"],
+            "mapping": "zero-order-hold-at-common-ticks",
+            "planning_state_times": "source_time_s (diagnostic only)",
+        },
         "plan_elapsed_s": time.perf_counter() - started,
         **{
             k: task[k]

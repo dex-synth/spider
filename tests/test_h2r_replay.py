@@ -4,8 +4,11 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
+import torch
 
 from spider.h2r.bundle import PREPARED_FILES, digest, identity, read_json, write_json
 from spider.h2r.replay import Replay, load_plan
@@ -44,7 +47,7 @@ class ReplayTests(unittest.TestCase):
         (root / "resolved_config.yaml").write_text("{}\n")
         binding = {
             **{k: v for k, v in self.task.items() if k != "semantics"},
-            "format": "spider-h2r-plan-v2",
+            "format": "spider-h2r-plan-v3",
             "preparation": {
                 **{
                     k: self.task[k]
@@ -55,7 +58,7 @@ class ReplayTests(unittest.TestCase):
                         "robot_manifest_sha256",
                     )
                 },
-                "format": "spider-h2r-v2",
+                "format": "spider-h2r-v3",
                 "model_source": "task",
                 "files": dict.fromkeys(PREPARED_FILES, "test-digest"),
             },
@@ -67,6 +70,60 @@ class ReplayTests(unittest.TestCase):
         }
         binding["plan_id"] = identity(binding)
         write_json(root / "plan.json", binding)
+
+    def test_native_plan_export_covers_common_grid(self):
+        """Run the real exporter and replay reader across nonmatching grids."""
+        from spider.h2r.plan import plan
+
+        class FakeController:
+            def __init__(self, *args):
+                self.config = SimpleNamespace(
+                    sim_dt=0.01, ctrl_dt=0.4, physics_substeps=1
+                )
+                self.source = {"qpos": np.zeros((1, 2))}
+                self.data = SimpleNamespace(
+                    qpos=np.zeros(2), qvel=np.zeros(2), ctrl=np.zeros(2), time=0
+                )
+                self.env = SimpleNamespace(model_cpu=None)
+                self.layout = SimpleNamespace(
+                    names=["wrist", "finger"], controls=lambda q: q
+                )
+
+            def action(self, step):
+                self.current_ctrl = torch.tensor([step, -step], dtype=torch.float32)
+                return {"wrist": step, "finger": -step}, {
+                    "replanned": step == 0,
+                    "opt_steps": [1],
+                }
+
+            def advance(self):
+                self.data.qpos[:] += 0.01
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prepared, task_path, output = (
+                root / "prepared",
+                root / "task",
+                root / "plan",
+            )
+            prepared.mkdir()
+            self.artifact(prepared)
+            binding = read_json(prepared / "plan.json")["preparation"]
+            write_json(prepared / "h2r_binding.json", binding)
+            with (
+                patch("spider.h2r.plan.load_task", return_value=self.task),
+                patch("spider.h2r.plan.load_prepared", return_value=binding),
+                patch("spider.h2r.controller.Controller", FakeController),
+                patch("spider.h2r.plan.mujoco.mj_forward"),
+            ):
+                plan(prepared, task_path, output, "cpu", 0)
+            manifest, data = load_plan(output, self.task)
+            self.assertEqual(manifest["native_controls"], 8)
+            self.assertEqual(manifest["controls"], 3)
+            np.testing.assert_array_equal(
+                data["joint_targets"], [[0, 0], [3, -3], [6, -6]]
+            )
+            np.testing.assert_allclose(data["source_time_s"], [0, 0.03, 0.06])
 
     def test_twenty_evaluations_share_identical_controls(self):
         """Ignore perturbed observations in both modes and all ten seeds."""
@@ -105,10 +162,10 @@ class ReplayTests(unittest.TestCase):
             root = Path(tmp)
             self.artifact(root)
             original = read_json(root / "plan.json")
-            for legacy in (True, False):
+            for legacy in ("spider-h2r-plan-v1", "spider-h2r-plan-v2", None):
                 changed = copy.deepcopy(original)
                 if legacy:
-                    changed["format"] = "spider-h2r-plan-v1"
+                    changed["format"] = legacy
                 else:
                     changed["preparation"]["planning_scene"] = "custom.xml"
                 changed["plan_id"] = identity(

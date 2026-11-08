@@ -82,7 +82,10 @@ def check(prepared, task_path, run, controller_log, episode, device, steps):
             wp.to_torch(env.data_wp.time).cpu(), controller.data.time, atol=1e-6
         )
         if previous is not None:
-            torch.testing.assert_close(controls[:-1], previous[1:], rtol=0, atol=0)
+            shift = config.ctrl_steps
+            torch.testing.assert_close(
+                controls[:-shift], previous[shift:], rtol=0, atol=0
+            )
         return optimize(config, env, controls, reference)
 
     controller.optimize = audit
@@ -99,7 +102,11 @@ def check(prepared, task_path, run, controller_log, episode, device, steps):
         )
         previous = controller.controls.clone()
         diagnostics.append(
-            {"tick": frame["tick"], "compute_s": diagnostic["compute_s"]}
+            {
+                "tick": frame["tick"],
+                "compute_s": diagnostic["compute_s"],
+                "replanned": diagnostic["replanned"],
+            }
         )
         try:
             controller.control(frame, names)
@@ -114,7 +121,7 @@ def check(prepared, task_path, run, controller_log, episode, device, steps):
         "gpu_state_max_error": gpu_error,
         "probe_steps": diagnostics,
         "rng_preserved": True,
-        "rolling_plan_checked": steps > 1,
+        "rolling_plan_checked": sum(d["replanned"] for d in diagnostics) > 1,
         "stale_tick_rejected": True,
     }
 

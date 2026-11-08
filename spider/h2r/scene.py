@@ -15,7 +15,7 @@ def calibration_for(task):
     return calibration
 
 
-def planning_model(task_path, task, calibration):
+def planning_spec(task_path, task, calibration):
     """Compile the task with massless tracking sites; do not write a scene copy."""
     if load_task(task_path) != task:
         raise ValueError("Planning task identity changed")
@@ -34,4 +34,10 @@ def planning_model(task_path, task, calibration):
             node.add_site(name=name, pos=[0, 0, 0], size=[0.001, 0, 0], group=4)
         wrist_sites.append(names[0])
         finger_sites.extend(names[1:])
-    return spec.compile(), wrist_sites, finger_sites
+    return spec, wrist_sites, finger_sites
+
+
+def planning_model(task_path, task, calibration):
+    """Compile the unchanged physical task plus tracking sites for MPC."""
+    spec, wrists, fingers = planning_spec(task_path, task, calibration)
+    return spec.compile(), wrists, fingers

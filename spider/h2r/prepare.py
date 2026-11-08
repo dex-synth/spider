@@ -5,90 +5,30 @@ import subprocess
 import time
 from pathlib import Path
 
-import mink
 import mujoco
 import numpy as np
 import yaml
 
-from spider.preprocess.ik_fast import make_tasks, solve_velocity
-
 from .bundle import digest, load_inputs, write_json
+from .kinematics import solve_kinematics
 from .model import Layout
-from .reference import hand_targets, velocities
-from .scene import calibration_for, planning_model
-from .settings import settings, validate_clock
-
-
-def solve_kinematics(layout, reference_q, times, wrists, tips, sites, options):
-    """Run native fast IK while freezing every non-robot degree of freedom."""
-    model = layout.model
-    configuration = mink.Configuration(model)
-    initial = reference_q[0].copy()
-    for name, q in zip(layout.names, layout.robot_q, strict=True):
-        joint = model.joint(name)
-        if joint.limited[0]:
-            initial[q] = np.clip(initial[q], *joint.range)
-    configuration.update(initial)
-    costs = {k: v for k, v in options.items() if k.endswith("_cost")}
-    wrist_tasks, finger_tasks, posture = make_tasks(configuration, *sites, **costs)
-    constraints = (
-        [mink.DofFreezingTask(model, layout.passive_dofs)]
-        if layout.passive_dofs
-        else []
-    )
-    fixed_q = sorted(set(range(model.nq)) - set(layout.robot_q))
-    sides = list(wrists)
-
-    def targets(frame):
-        for i, side in enumerate(sides):
-            pose = wrists[side][frame]
-            wrist_tasks[i].set_target(mink.SE3(wxyz_xyz=np.r_[pose[3:], pose[:3]]))
-            for j in range(5):
-                finger_tasks[5 * i + j].set_target(
-                    mink.SE3(wxyz_xyz=np.r_[1.0, 0, 0, 0, tips[side][frame, j]])
-                )
-        value = configuration.q.copy()
-        value[fixed_q] = reference_q[frame, fixed_q]
-        configuration.update(value)
-
-    def advance(tasks, count, dt):
-        for _ in range(count):
-            velocity = solve_velocity(configuration, tasks, dt, constraints=constraints)
-            configuration.integrate_inplace(velocity, dt)
-
-    targets(0)
-    advance([posture, *wrist_tasks], options["wrist_init_steps"], options["dt"])
-    advance(
-        [posture, *wrist_tasks, *finger_tasks],
-        options["finger_init_steps"],
-        options["dt"],
-    )
-    result = []
-    for frame in range(len(times)):
-        targets(frame)
-        interval = times[frame] - times[frame - 1] if frame else times[1] - times[0]
-        count = max(1, int(np.ceil(interval / options["dt"])))
-        advance([posture, *wrist_tasks, *finger_tasks], count, interval / count)
-        value = configuration.q.copy()
-        value[fixed_q] = reference_q[frame, fixed_q]
-        result.append(value)
-        if frame % 100 == 0:
-            print(f"IK frame {frame}/{len(times)}", flush=True)
-    result = np.asarray(result)
-    if not np.isfinite(result).all():
-        raise ValueError("Non-finite IK result")
-    return result
+from .reference import hand_targets
+from .scene import calibration_for, planning_spec
+from .settings import PIPELINE, settings, validate_clock
 
 
 def check_initialization(model, layout, qpos, task):
     """Check the proposed zero-velocity initial frame without advancing physics."""
+    joint_limits = []
     for name, q in zip(layout.names, layout.robot_q, strict=True):
         joint = model.joint(name)
         if (
             joint.limited[0]
             and not joint.range[0] - 1e-6 <= qpos[q] <= joint.range[1] + 1e-6
         ):
-            raise ValueError(f"Initial joint outside limits: {name}")
+            joint_limits.append(
+                {"joint": name, "qpos": float(qpos[q]), "range": joint.range.tolist()}
+            )
     data = mujoco.MjData(model)
     data.qpos[:] = qpos
     data.ctrl[:] = layout.controls(qpos)
@@ -105,7 +45,8 @@ def check_initialization(model, layout, qpos, task):
     ]
     return {
         "max_penetration_m": threshold,
-        "accepted": not collisions,
+        "accepted": not collisions and not joint_limits,
+        "joint_limit_violations": joint_limits,
         "collisions": collisions,
     }
 
@@ -125,13 +66,15 @@ def prepare(task_path, output, config=None):
         yaml.safe_dump(options, sort_keys=False)
     )
     write_json(output / "calibration.json", calibration)
-    model, wrist_sites, finger_sites = planning_model(task_path, task, calibration)
+    spec, wrist_sites, finger_sites = planning_spec(task_path, task, calibration)
+    model = spec.compile()
     layout = Layout(model, task)
     wrists, tips = hand_targets(
         reference, data, task["semantics"]["hands"], calibration
     )
     reference_q = layout.reference_positions(reference, data)
-    qpos = solve_kinematics(
+    qpos, qvel, native = solve_kinematics(
+        spec,
         layout,
         reference_q,
         data["time_s"],
@@ -141,13 +84,13 @@ def prepare(task_path, output, config=None):
         options["ik"],
     )
     times = data["time_s"]
-    qvel = velocities(model, times, qpos)
     np.savez_compressed(
         output / "trajectory_kinematic.npz",
         time_s=times,
         qpos=qpos,
         qvel=qvel,
         ctrl=layout.controls(qpos),
+        **native,
     )
     np.savez_compressed(
         output / "trajectory_keypoints.npz",
@@ -158,7 +101,9 @@ def prepare(task_path, output, config=None):
     check = check_initialization(model, layout, qpos[0], task)
     write_json(output / "initialization.json", check)
     if not check["accepted"]:
-        raise ValueError(f"IK initial collision; see {output / 'initialization.json'}")
+        raise ValueError(
+            f"IK initialization rejected; see {output / 'initialization.json'}"
+        )
     write_json(output / "initial_robot.json", layout.targets(layout.controls(qpos[0])))
     repo = Path(__file__).resolve().parents[2]
     revision = subprocess.check_output(
@@ -168,8 +113,9 @@ def prepare(task_path, output, config=None):
         subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True)
     )
     binding = {
-        "format": "spider-h2r-v2",
-        "recipe": "fast-ik-native-sampling-h2r",
+        "format": "spider-h2r-v3",
+        "pipeline": PIPELINE,
+        "reference_mapping": "native-50Hz; centered-valid-filter; endpoint-hold; exact-object-goals",
         "method_revision": revision,
         "method_worktree_dirty": dirty,
         "planning_backend": "mjwarp",

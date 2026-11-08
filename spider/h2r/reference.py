@@ -80,5 +80,21 @@ def sample_reference(model, layout, arrays, query):
         )(clipped).as_quat(scalar_first=True)
     qvel = velocities(model, np.asarray(query), qpos)
     qvel[0] = [np.interp(clipped[0], times, values) for values in arrays["qvel"].T]
+    if "filtered_time_s" in arrays:
+        valid = arrays["filtered_time_s"]
+        for q, v in zip(layout.robot_q, layout.robot_v, strict=True):
+            qpos[:, q] = np.interp(query, valid, arrays["filtered_qpos"][:, q])
+            qvel[:, v] = np.interp(query, valid, arrays["filtered_qvel"][:, v])
+            qvel[(query < valid[0]) | (query > valid[-1]), v] = 0
     qvel[np.asarray(query) > times[-1]] = 0
     return qpos, qvel, layout.controls(qpos)
+
+
+def hold_indices(times, query):
+    """Select the latest available action; never look ahead or stretch time."""
+    # Tolerance only handles arithmetic disagreement at identical timestamps.
+    return np.clip(
+        np.searchsorted(times, np.asarray(query) + 1e-12, side="right") - 1,
+        0,
+        len(times) - 1,
+    )
