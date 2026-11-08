@@ -10,11 +10,11 @@ import numpy as np
 import yaml
 
 from .bundle import digest, load_inputs, write_json
-from .kinematics import solve_kinematics
+from .kinematics import diagnostic_rollout, solve_kinematics
 from .model import Layout
 from .reference import hand_targets
 from .scene import calibration_for, planning_spec
-from .settings import PIPELINE, settings, validate_clock
+from .settings import PIPELINE, recipe, settings, validate_clock
 
 
 def check_initialization(model, layout, qpos, task):
@@ -58,7 +58,12 @@ def prepare(task_path, output, config=None):
     if output.is_relative_to(task_path):
         raise ValueError("Output must be outside the task")
     task, reference, data = load_inputs(task_path)
-    options = settings(config)
+    options = settings(
+        config,
+        dataset=reference.get("dataset"),
+        ref_dt=1
+        / reference.get("reference_hz", 1 / np.median(np.diff(data["time_s"]))),
+    )
     validate_clock(options["mpc"], task)
     calibration = calibration_for(task)
     output.mkdir(parents=True, exist_ok=False)
@@ -98,7 +103,21 @@ def prepare(task_path, output, config=None):
         **{f"{side}_wrist": pose for side, pose in wrists.items()},
         **{f"{side}_tips": points for side, points in tips.items()},
     )
-    check = check_initialization(model, layout, qpos[0], task)
+    np.savez_compressed(
+        output / "trajectory_ikrollout.npz",
+        qpos=diagnostic_rollout(
+            model,
+            layout,
+            native["filtered_qpos"],
+            native["filtered_qvel"],
+            options["ik"],
+        ),
+        time_s=native["filtered_time_s"],
+    )
+    # Method-smoothed objects must never redefine the shared initial object pose.
+    initial_qpos = reference_q[0].copy()
+    initial_qpos[layout.robot_q] = qpos[0, layout.robot_q]
+    check = check_initialization(model, layout, initial_qpos, task)
     write_json(output / "initialization.json", check)
     if not check["accepted"]:
         raise ValueError(
@@ -113,9 +132,9 @@ def prepare(task_path, output, config=None):
         subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True)
     )
     binding = {
-        "format": "spider-h2r-v3",
-        "pipeline": PIPELINE,
-        "reference_mapping": "native-50Hz; centered-valid-filter; endpoint-hold; exact-object-goals",
+        "format": "spider-h2r-v4",
+        "pipeline": {**PIPELINE, "dataset_override": recipe(reference.get("dataset"))},
+        "reference_mapping": "dataset-rate; native-all-column-filter; source-time-mapped-linear-interpolation; endpoint-value-hold",
         "method_revision": revision,
         "method_worktree_dirty": dirty,
         "planning_backend": "mjwarp",

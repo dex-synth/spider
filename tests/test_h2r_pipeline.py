@@ -1,6 +1,5 @@
-"""Behavioral checks for paper preprocessing and ordinary chunked MPC."""
+"""Behavioral checks for upstream fast preprocessing, selection and recovery."""
 
-import contextlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,175 +9,280 @@ from unittest.mock import patch
 import mujoco
 import numpy as np
 import torch
-from test_h2r_task import CALIBRATION, task_fixture
+from test_h2r_integration import fixture
 
-from spider.config import Config, compute_steps
+from spider.config import Config
 from spider.h2r.controller import Controller
-from spider.h2r.model import Layout
-from spider.h2r.reference import hold_indices, sample_reference, velocities
-from spider.h2r.scene import planning_spec
-from spider.h2r.settings import settings
-from spider.preprocess.ik import make_ik_model, postprocess
+from spider.h2r.fast_loop import run_fast
+from spider.h2r.reference import hold_indices, native_reference, sample_reference
+from spider.h2r.settings import settings, validate_clock
+from spider.interp import interp
+from spider.optimizers.sampling_fast import (
+    make_optimize_fn_fast,
+    make_optimize_once_fn_fast,
+)
+from spider.preprocess.ik_fast import postprocess
+
+
+class FakeDriver:
+    """Deterministic private-world driver for failure/recovery transitions."""
+
+    def __init__(self, outcomes, retries=1, reverts=2):
+        self.config = Config(
+            device="cpu",
+            max_num_iterations=2,
+            max_local_retries=retries,
+            max_revert_depth=reverts,
+        )
+        self.config.env_params_list = [[{}], [{}]]
+        self.config.noise_scale = torch.ones(1)
+        self.step = 0
+        self.segments = []
+        self.outcomes = iter(outcomes)
+        self.calls, self.restored = [], []
+
+    def save_checkpoint(self):
+        """Capture a rollback position and provisional output length."""
+        return {"step": self.step, "segments_len": len(self.segments)}
+
+    def truncate(self, checkpoint):
+        """Discard provisional segments after the native commit boundary."""
+        del self.segments[checkpoint["segments_len"] if checkpoint else 0 :]
+
+    def load_checkpoint(self, checkpoint):
+        """Restore position without rewinding the random outcome stream."""
+        self.restored.append(checkpoint["step"])
+        self.step = checkpoint["step"]
+        self.truncate(checkpoint)
+
+    def optimize_chunk(self):
+        """Expose the step, iteration budget and noise for comparison."""
+        self.calls.append(
+            (
+                self.step,
+                self.config.max_num_iterations,
+                float(self.config.noise_scale[0]),
+            )
+        )
+        return self.step, {
+            "succeeded": np.array([next(self.outcomes)]),
+            "opt_steps": np.array([self.config.max_num_iterations]),
+            "num_attempts": np.array([1]),
+        }
+
+    def replay_chunk(self, step, info):
+        """Commit one synthetic execution interval."""
+        self.segments.append(step)
+        self.step += 1
+        return self.step
 
 
 class PipelineTests(unittest.TestCase):
-    """Protect numerical preprocessing and execution timing."""
+    """Check selected fast semantics independently of GPU throughput."""
 
-    def test_private_ik_constraints_and_physics_isolation(self):
-        """Keep the original constraint recipe private to IK."""
+    def test_dataset_defaults(self):
+        """Keep each dataset recipe and accept its native reference rate."""
+        base = settings(dataset="hot3d", ref_dt=1 / 30)
+        self.assertEqual(base["mpc"]["max_num_iterations"], 32)
+        self.assertEqual(base["mpc"]["nconmax_per_env"], 120)
+        self.assertEqual(base["mpc"]["njmax_per_env"], 350)
+        self.assertEqual(base["ik"]["ref_dt"], 1 / 30)
+        validate_clock(base["mpc"], {})
+        for dataset, iterations, rotation, sanity in [
+            ("arctic", 4, 2.5, 0),
+            ("oakink2", 4, 1.0, 3),
+            ("gigahand", 8, 0.5, 3),
+            ("oakink", 8, 0.5, 3),
+        ]:
+            cfg = settings(dataset=dataset)["mpc"]
+            self.assertEqual(cfg["max_num_iterations"], iterations)
+            self.assertEqual(cfg["object_rot_threshold"], rotation)
+            self.assertEqual(cfg["sanity_check_seconds"], sanity)
+            self.assertEqual(cfg["ctrl_dt"], 1.5)
+            self.assertEqual(cfg["temperature"], 1.0)
+            self.assertEqual(cfg["improvement_threshold"], -1.0)
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            task = task_fixture(root)
-            spec, wrists, tips = planning_spec(root, task, CALIBRATION)
-            physical = spec.compile()
-            ik, ids = make_ik_model(
-                spec,
-                [(wrists[0], "wrist"), *zip(tips, range(5), strict=True)],
-                settings()["ik"],
-            )
-            self.assertEqual(len(set(ids)), 6)
-            np.testing.assert_array_equal(ik.eq_type, [1, 0, 0, 0, 0, 0])
-            np.testing.assert_allclose(
-                ik.eq_solimp[:, 2], [10, 0.01, 0.01, 0.01, 0.03, 0.03]
-            )
-            self.assertTrue(ik.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_ACTUATION)
-            self.assertTrue(ik.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT)
-            self.assertEqual(spec.compile().neq, 0)
-            for field in (
-                "geom_contype",
-                "geom_conaffinity",
-                "actuator_gainprm",
-                "body_mass",
-            ):
-                np.testing.assert_array_equal(
-                    getattr(spec.compile(), field), getattr(physical, field)
-                )
+            path = Path(tmp) / "settings.yaml"
+            path.write_text("mpc:\n  num_dr: 2\n")
+            with self.assertRaisesRegex(ValueError, "nominal"):
+                settings(path)
 
-    def test_filter_interior_and_timestamp_coverage(self):
-        """Retain native interior values without discarding common endpoints."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            task = task_fixture(root)
-            spec, _, _ = planning_spec(root, task, CALIBRATION)
-            model = spec.compile()
-            layout = Layout(model, task)
-            qpos = np.tile(model.qpos0, (8, 1))
-            q, v = layout.robot_q[0], layout.robot_v[0]
-            qpos[:, q] = [0, 0, 0, 3, 0, 0, 0, 0]
-            filtered, speed = postprocess(model, qpos, 0.02, 3)
-            np.testing.assert_allclose(filtered[:, q], [1, 1, 1, 0, 0])
-            np.testing.assert_allclose(speed[:, v], [50, 0, 0, -50, 0])
-            times = np.arange(8) * 0.02
-            source = {
-                "time_s": times,
-                "qpos": qpos,
-                "qvel": velocities(model, times, qpos),
-                "filtered_time_s": np.arange(2, 7) * 0.02,
-                "filtered_qpos": filtered,
-                "filtered_qvel": speed,
-            }
-            query = np.array([0, 0.02, 0.04, 0.05, 0.08, 0.1, 0.14, 0.2])
-            result, vel, _ = sample_reference(model, layout, source, query)
-            np.testing.assert_allclose(result[:, q], [1, 1, 1, 1, 1, 0, 0, 0])
-            np.testing.assert_allclose(vel[:, v], [0, 0, 50, 25, 0, -50, 0, 0])
-            for index, _ in layout.root_indices.values():
-                np.testing.assert_allclose(
-                    result[:, index : index + 7],
-                    np.tile(model.qpos0[index : index + 7], (len(query), 1)),
-                )
-
-    def test_native_chunk_execution_lookahead_and_shift(self):
-        """Execute a full chunk and append the correct future reference."""
-        # Use the production loop with a deterministic optimizer. Assert the
-        # full multi-action trace and future references, not merely call count.
-        ctrl = Controller.__new__(Controller)
-        ctrl.config = Config(device="cpu", **settings()["mpc"])
-        compute_steps(ctrl.config)
-        ctrl.controls = ctrl.chunk_start = None
-        ctrl.setup_s = 0
-        ctrl.device_index = 0
-        ctrl.cpu_rng = torch.get_rng_state()
-        ctrl.cuda_rng = torch.get_rng_state()
-        ctrl.env, ctrl.data = object(), object()
-        ctrl.layout = SimpleNamespace(targets=lambda x: {"joint": float(x[0])})
-        ctrl.synchronize = lambda: None
-        ctrl.reference = lambda t: (torch.arange(161)[:, None] + round(t / 0.01),) * 5
-        calls, warm = [], []
-
-        def optimize(cfg, env, controls, reference):
-            calls.append(reference[2].clone())
-            warm.append(controls.clone())
-            return controls + 1000, {"opt_steps": torch.tensor([2])}
-
-        ctrl.optimize = optimize
-        with (
-            patch("torch.random.fork_rng", return_value=contextlib.nullcontext()),
-            patch("torch.cuda.set_rng_state"),
-            patch("torch.cuda.get_rng_state", return_value=ctrl.cuda_rng),
-            patch("spider.h2r.controller.mjwp.sync_env") as sync,
-        ):
-            outputs = [ctrl.action(i) for i in range(85)]
-        self.assertEqual(
-            [i for i, (_, d) in enumerate(outputs) if d["replanned"]], [0, 40, 80]
-        )
-        self.assertEqual(sync.call_count, 2)
-        self.assertEqual([v[0]["joint"] for v in outputs[:40]], list(range(1000, 1040)))
-        self.assertEqual(outputs[40][0]["joint"], 2040)
-        self.assertEqual(outputs[80][0]["joint"], 3080)
-        torch.testing.assert_close(calls[1][:, 0], torch.arange(41, 201))
-        torch.testing.assert_close(warm[1][-40:, 0], torch.arange(160, 200))
-        self.assertEqual(sum(bool(d["opt_steps"]) for _, d in outputs), 3)
-
-    def test_online_observation_used_only_when_replanning(self):
-        """Cached actions retain their indices; each replan sees fresh state."""
-        ctrl = Controller.__new__(Controller)
-        ctrl.config = Config(device="cpu", **settings()["mpc"])
-        compute_steps(ctrl.config)
-        ctrl.task = {"dt_s": 1 / 240, "control_ticks": 8, "end_tick": 105}
-        ctrl.tick, ctrl.setup_s, ctrl.device_index = 0, 0, 0
-        ctrl.controls = ctrl.chunk_start = None
-        ctrl.cpu_rng = ctrl.cuda_rng = torch.get_rng_state()
-        ctrl.env = object()
-        ctrl.data = SimpleNamespace(qpos=np.zeros(1), qvel=np.zeros(1))
-        ctrl.synchronize = lambda: None
-        ctrl.layout = SimpleNamespace(
-            targets=lambda x: {"joint": float(x[0])},
-            write_observation=lambda data, frame, names: data.qpos.fill(frame["tick"]),
-        )
-        ctrl.reference = lambda t: (torch.arange(161)[:, None].float(),) * 5
-        seen = []
-
-        def optimize(cfg, env, controls, reference):
-            seen.append(float(ctrl.data.qpos[0]))
-            return controls + ctrl.data.qpos[0], {"opt_steps": [1]}
-
-        ctrl.optimize = optimize
-        with (
-            patch("torch.random.fork_rng", return_value=contextlib.nullcontext()),
-            patch("torch.cuda.set_rng_state"),
-            patch("torch.cuda.get_rng_state", return_value=ctrl.cuda_rng),
-        ):
-            output = [
-                ctrl.control({"tick": t, "time_s": t / 240}, ["joint"])
-                for t in range(0, 105, 8)
-            ]
-        self.assertEqual(seen, [0, 96])
-        self.assertEqual([x[0]["joint"] for x in output[:4]], [0, 3, 6, 10])
-        self.assertEqual(output[12][0]["joint"], 136)
-        self.assertEqual(output[13][1]["planning_qpos"], [104])
-        with self.assertRaisesRegex(ValueError, "clock"):
-            ctrl.control({"tick": 104, "time_s": 104 / 240}, ["joint"])
-
-    def test_noncommensurate_publication_and_short_final_interval(self):
-        """Publish past native actions at every common tick, including the tail."""
-        native = np.arange(8) * 0.01
-        ticks = np.arange(0, 19, 8)
-        indices = hold_indices(native, ticks / 240)
-        np.testing.assert_array_equal(indices, [0, 3, 6])
+    def test_filter_and_reference_values(self):
+        """Preserve all-column filtering, interpolation and endpoint velocity."""
+        model, _, layout = fixture()
+        qpos = np.tile(model.qpos0, (8, 1))
+        root, _ = layout.root_indices["a"]
+        qpos[:, root] = [0, 0, 0, 3, 0, 0, 0, 0]
+        qpos[:, layout.robot_q[0]] = np.arange(8) ** 2
+        filtered, speed = postprocess(model, qpos, 0.02, 3)
+        np.testing.assert_allclose(filtered[:, root], [1, 1, 1, 0, 0])
+        expected_v = np.empty(model.nv)
+        mujoco.mj_differentiatePos(model, expected_v, 0.02, filtered[-2], filtered[-1])
+        np.testing.assert_allclose(speed[-1], expected_v)
+        source = {
+            "filtered_time_s": np.arange(2, 7) * 0.02,
+            "filtered_qpos": filtered,
+            "filtered_qvel": speed,
+        }
+        cfg = Config(device="cpu", ref_steps=2)
+        native = native_reference(layout, source, cfg)
         np.testing.assert_array_equal(
-            hold_indices(native, [0.03, 0.06 + 1e-16]), [3, 6]
+            native["qpos"],
+            interp(torch.tensor(filtered[None], dtype=torch.float32), 2)[0].numpy(),
         )
-        self.assertTrue(np.all(native[indices] <= ticks / 240 + 1e-12))
+        result, velocity, _ = sample_reference(model, layout, native, [-1, 0.12, 1])
+        np.testing.assert_allclose(result[0], filtered[0], atol=1e-6)
+        np.testing.assert_allclose(result[-1], filtered[-1], atol=1e-6)
+        np.testing.assert_allclose(velocity[-1], speed[-1], atol=1e-5)
+        self.assertGreater(np.linalg.norm(velocity[-1]), 0)
+        np.testing.assert_allclose(native["time_s"][[0, -1]], [0.04, 0.12])
+
+    def test_optimizer_fixed_iterations_and_attempts(self):
+        """Run all rounds and only select the final sample on each attempt."""
+        for succeeded, total in [(True, 4), (False, 16)]:
+            cfg = Config(
+                device="cpu",
+                max_num_iterations=4,
+                ctrl_steps=2,
+                improvement_threshold=100,
+                use_torch_compile=False,
+            )
+            cfg.env_params_list = [[{}]] * 4
+            cfg.beta_traj = 0.9
+            calls = []
+
+            def once(cfg, env, controls, ref, env_params, sample_params, select_best):
+                calls.append(select_best)  # noqa: B023
+                return (
+                    controls,
+                    None,
+                    {
+                        "improvement": 0.0,
+                        "recorded_qpos": torch.zeros(2, 1),
+                        "recorded_qvel": torch.zeros(2, 1),
+                        "state_snapshot": {"sentinel": 42},
+                        "best_idx": 1,
+                    },
+                )
+
+            optimize = make_optimize_fn_fast(
+                once,
+                lambda *_: (
+                    not succeeded,  # noqa: B023
+                    {"max_pos_error": 1.0, "max_rot_error": 0.0},
+                ),
+            )
+            _, info = optimize(cfg, None, torch.zeros(4, 1), (torch.zeros(4, 1),))
+            self.assertEqual(calls, [False, False, False, True] * (total // 4))
+            self.assertEqual(info["opt_steps"].item(), total)
+            self.assertEqual(info["succeeded"].item(), succeeded)
+            self.assertEqual(info["state_snapshot"], {"sentinel": 42})
+
+    def test_final_control_is_actual_best_sample(self):
+        """Distinguish the final sampled control from a soft weighted mean."""
+        cfg = Config(device="cpu", num_samples=100, use_torch_compile=False)
+        samples = torch.arange(100.0)[:, None, None]
+
+        def rollout(*args, record_states):
+            return (
+                samples,
+                -torch.abs(torch.arange(100.0) - 1),
+                torch.zeros(100),
+                {
+                    "trace": torch.empty(100, 1, 0, 3),
+                    "recorded_qpos": samples + 100,
+                    "recorded_qvel": samples + 200,
+                    "state_snapshot": {"state": samples + 300},
+                },
+            )
+
+        optimize = make_optimize_once_fn_fast(rollout)
+        with patch(
+            "spider.optimizers.sampling_fast.sample_ctrls", return_value=samples
+        ):
+            mean, _, _ = optimize(cfg, None, samples[0], (), select_best=False)
+            best, _, info = optimize(cfg, None, samples[0], (), select_best=True)
+        torch.testing.assert_close(best, samples[1])
+        self.assertFalse(torch.equal(mean, best))
+        self.assertEqual(info["best_idx"], 1)
+        torch.testing.assert_close(info["recorded_qpos"], samples[1] + 100)
+
+    def test_local_retry_boost_persists_until_recovery(self):
+        """Do not reset a local boost on an ordinary successful segment."""
+        driver = FakeDriver([False, True, True])
+        self.assertTrue(run_fast(driver, 2, lambda _: None))
+        self.assertEqual([c[:2] for c in driver.calls], [(0, 2), (0, 4), (1, 4)])
+        self.assertEqual(driver.restored, [0])
+        np.testing.assert_allclose(driver.calls[1][2], np.sqrt(2))
+        self.assertEqual(driver.segments, [0, 1])
+
+    def test_recovery_reuses_anchor_then_resets_boost(self):
+        """Return to the same checkpoint and reset only beyond the anchor."""
+        driver = FakeDriver([True, False, False, False, False, True, True, True])
+        self.assertTrue(run_fast(driver, 3, lambda _: None))
+        self.assertEqual(
+            [c[:2] for c in driver.calls],
+            [(0, 2), (1, 2), (1, 4), (0, 2), (0, 4), (0, 2), (1, 2), (2, 2)],
+        )
+        self.assertEqual(driver.restored, [1, 0, 0, 0])
+        self.assertEqual(driver.segments, [0, 1, 2])
+
+    def test_failure_truncates_then_replays_last_candidate(self):
+        """Keep the original failure output, including its possible time gap."""
+        driver = FakeDriver([True, True] + [False] * 6)
+        self.assertFalse(run_fast(driver, 4, lambda _: None))
+        self.assertEqual(driver.segments, [1])  # Native truncation can leave a gap.
+        self.assertEqual(driver.config.max_num_iterations, 2)
+        self.assertEqual(driver.restored, [2, 1, 1, 1, 1])
+
+    def test_no_history_failure(self):
+        """Replay the final candidate once before declaring failure."""
+        driver = FakeDriver([False, False])
+        self.assertFalse(run_fast(driver, 2, lambda _: None))
+        self.assertEqual(driver.segments, [0])
+
+    def test_snapshot_replay_and_reference_shift(self):
+        """Advance with recorded states and shift exactly one control interval."""
+        model = mujoco.MjModel.from_xml_string(
+            '<mujoco><worldbody><body><joint/><geom size=".1"/></body></worldbody><actuator><position joint="0"/></actuator></mujoco>'.replace(
+                "<joint/>", '<joint name="0"/>'
+            )
+        )
+        driver = Controller.__new__(Controller)
+        driver.config = Config(device="cpu", horizon_steps=4, ctrl_steps=2)
+        driver.env = SimpleNamespace(model_cpu=model)
+        driver.data = mujoco.MjData(model)
+        driver.controls = torch.arange(4.0)[:, None]
+        driver.reference = lambda step: (torch.arange(step, step + 5.0)[:, None],) * 5
+        driver.segments = []
+        info = {
+            "best_qpos": np.array([[0.1], [0.2]]),
+            "best_qvel": np.array([[1.0], [2.0]]),
+            "state_snapshot": object(),
+            "best_idx": 7,
+        }
+        with patch("spider.h2r.controller._restore_best_state_to_env") as restore:
+            step = driver.replay_chunk(0, info)
+        self.assertEqual(step, 2)
+        np.testing.assert_allclose(driver.data.qpos, [0.2])
+        np.testing.assert_allclose(driver.data.qvel, [2.0])
+        torch.testing.assert_close(
+            driver.controls[:, 0], torch.tensor([2.0, 3.0, 4.0, 5.0])
+        )
+        restore.assert_called_once_with(driver.env, info["state_snapshot"], 7)
+        np.testing.assert_array_equal(driver.segments[0]["ctrl"].ravel(), [0, 1])
+
+    def test_noncommensurate_publication(self):
+        """Never look ahead when mapping native actions to common ticks."""
+        native = np.arange(8) * 0.01
+        np.testing.assert_array_equal(
+            hold_indices(native, np.arange(0, 19, 8) / 240), [0, 3, 6]
+        )
+
+    def test_online_rollback_is_explicitly_unsupported(self):
+        """Prevent offline recovery from being mislabeled as online feedback."""
+        with self.assertRaisesRegex(ValueError, "--plan"):
+            Controller.__new__(Controller).control({}, [])
 
 
 if __name__ == "__main__":

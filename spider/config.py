@@ -28,6 +28,9 @@ class Config:
     # === SIMULATOR CONFIGURATION ===
     simulator: str = "mjwp"  # "isaac" | "mujoco" | "mjwp" | "mjwp_cons" | "mjwp_eq" | "mjwp_cons_eq" | "kinematic"
     device: str = "cuda:0"
+    sanity_check_seconds: float = 3.0
+    sanity_check_pos_thresh: float = 0.01
+    sanity_check_rot_thresh: float = 0.3
     # Simulation timing
     sim_dt: float = 0.01  # simulation timestep
     physics_substeps: int = 1  # Internal integrator steps per state/control sample

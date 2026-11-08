@@ -1,4 +1,4 @@
-"""Deploy a sealed SPIDER plan, or explicit online MPC, to the evaluator."""
+"""Deploy a sealed SPIDER fast plan to the independent evaluator."""
 
 import argparse
 import json
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .bundle import digest, load_prepared, load_task, read_json, write_json
+from .bundle import digest, load_task, read_json, write_json
 from .protocol import receive, send
 
 
@@ -151,7 +151,7 @@ def main():
     source.add_argument(
         "--prepared",
         type=Path,
-        help="Explicit online MPC diagnostic using task-only preparation",
+        help="Legacy online option; unsupported by the v4 fast rollback pipeline",
     )
     for key in ("task", "socket", "output"):
         parser.add_argument(f"--{key}", type=Path, required=True)
@@ -168,13 +168,9 @@ def main():
         def factory(prepared, task, device, seed):
             return Replay(task, binding, data)
     else:
-        from .controller import Controller
-
-        prepared, binding_file = args.prepared, "h2r_binding.json"
-        binding = load_prepared(prepared, task)
-
-        def factory(prepared, task, device, seed):
-            return Controller(prepared, args.task, device, seed)
+        raise ValueError(
+            "Upstream fast rollback requires offline --plan; --prepared is unsupported"
+        )
 
     args.output.mkdir(parents=True, exist_ok=False)
 

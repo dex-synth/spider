@@ -2,7 +2,7 @@
 
 import mujoco
 import numpy as np
-from scipy.spatial.transform import Rotation, Slerp
+from scipy.spatial.transform import Rotation
 
 from .model import finite
 
@@ -66,28 +66,56 @@ def velocities(model, times, qpos):
     return qvel
 
 
+def component_sample(times, values, query):
+    """Independent scalar interpolation, including quaternion and velocity columns."""
+    return np.column_stack([np.interp(query, times, column) for column in values.T])
+
+
+def native_reference(layout, arrays, config):
+    """Native io.interp values plus explicit source-time mapping to the task clock.
+
+    Upstream labels H*n align_corners samples as sim_dt and re-zeros the crop.
+    Retain those values, but map their source times explicitly so that a dataset
+    rate or filter cannot change the shared task speed or remove its endpoints.
+    """
+    import torch
+
+    from spider.interp import interp
+
+    times = arrays["filtered_time_s"]
+    values = [arrays["filtered_qpos"], arrays["filtered_qvel"]]
+    values.append(layout.controls(values[0]))
+    tensors = [torch.as_tensor(v, dtype=torch.float32) for v in values]
+    if config.ref_dt > config.sim_dt:
+        # process_config computes ref_steps before reading task_info.ref_dt.
+        # The pinned base YAML has .02; do not silently repair that native bug.
+        factor = config.ref_steps
+        if factor < 1:
+            raise ValueError("Native interpolation requires a positive ref_steps")
+        tensors = [interp(v[None], factor)[0] for v in tensors]
+        source_times = np.linspace(times[0], times[-1], len(tensors[0]))
+    else:
+        factor = int(config.sim_dt / config.ref_dt)
+        tensors = [v[::factor] for v in tensors]
+        source_times = times[::factor]
+    return {
+        "time_s": source_times,
+        **{
+            k: v.numpy() for k, v in zip(("qpos", "qvel", "ctrl"), tensors, strict=True)
+        },
+    }
+
+
 def sample_reference(model, layout, arrays, query):
-    """Sample at exact physical times; pad only the private planning horizon."""
-    times = arrays["time_s"]
-    clipped = np.clip(query, times[0], times[-1])
-    qpos = np.column_stack(
-        [np.interp(clipped, times, values) for values in arrays["qpos"].T]
+    """Sample all native reference channels independently; hold endpoint velocities."""
+    qpos, qvel = [
+        component_sample(arrays["time_s"], arrays[key], query)
+        for key in ("qpos", "qvel")
+    ]
+    ctrl = component_sample(
+        arrays["time_s"], arrays.get("ctrl", layout.controls(arrays["qpos"])), query
     )
-    for q, _ in layout.root_indices.values():
-        qpos[:, q + 3 : q + 7] = Slerp(
-            times,
-            Rotation.from_quat(arrays["qpos"][:, q + 3 : q + 7], scalar_first=True),
-        )(clipped).as_quat(scalar_first=True)
-    qvel = velocities(model, np.asarray(query), qpos)
-    qvel[0] = [np.interp(clipped[0], times, values) for values in arrays["qvel"].T]
-    if "filtered_time_s" in arrays:
-        valid = arrays["filtered_time_s"]
-        for q, v in zip(layout.robot_q, layout.robot_v, strict=True):
-            qpos[:, q] = np.interp(query, valid, arrays["filtered_qpos"][:, q])
-            qvel[:, v] = np.interp(query, valid, arrays["filtered_qvel"][:, v])
-            qvel[(query < valid[0]) | (query > valid[-1]), v] = 0
-    qvel[np.asarray(query) > times[-1]] = 0
-    return qpos, qvel, layout.controls(qpos)
+    return qpos, qvel, ctrl
 
 
 def hold_indices(times, query):

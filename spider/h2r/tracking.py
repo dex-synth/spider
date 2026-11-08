@@ -69,25 +69,51 @@ class Tracking:
         reward, info = self.reward(config, env, ref)
         return config.terminal_rew_scale * reward, info
 
+    def check_error(self, config, recorded_qpos, ref_qpos):
+        """Native max-over-window root checks using task names instead of slices."""
+        positions, rotations = [], []
+        for q, _ in self.layout.root_indices.values():
+            pos = torch.norm(
+                recorded_qpos[:, q : q + 3] - ref_qpos[:, q : q + 3], dim=1
+            )
+            rot = torch.norm(
+                quat_sub(recorded_qpos[:, q + 3 : q + 7], ref_qpos[:, q + 3 : q + 7]),
+                dim=1,
+            )
+            # Preserve upstream's absent-object sentinel for bimanual inputs.
+            if len(self.layout.task["semantics"]["hands"]) == 2 and torch.all(
+                ref_qpos[:, q : q + 3].abs() < 1e-4
+            ):
+                pos, rot = pos * 0, rot * 0
+            positions.append(pos.max().item())
+            rotations.append(rot.max().item())
+        max_pos, max_rot = max(positions, default=0.0), max(rotations, default=0.0)
+        exceeded = (
+            max_pos > config.object_pos_threshold
+            or max_rot > config.object_rot_threshold
+        )
+        return exceeded, {"max_pos_error": max_pos, "max_rot_error": max_rot}
+
     def terminate(self, config, env, ref):
-        """Flag failed private candidates without terminating an evaluation episode."""
+        """Native root thresholds; this flag is inert with terminate_resample=False."""
         qpos = wp.to_torch(env.data_wp.qpos)
-        delta = self.difference(qpos, ref[0].expand_as(qpos))
-        failed = ~torch.isfinite(qpos).all(dim=1)
-        for _, v in self.layout.root_indices.values():
-            failed |= (
-                torch.linalg.vector_norm(delta[:, v : v + 3], dim=1)
-                > config.object_pos_threshold
+        failed = torch.zeros(qpos.shape[0], device=qpos.device, dtype=torch.bool)
+        for q, _ in self.layout.root_indices.values():
+            pos = torch.norm(qpos[:, q : q + 3] - ref[0][q : q + 3], dim=1)
+            rot = torch.norm(
+                quat_sub(
+                    qpos[:, q + 3 : q + 7],
+                    ref[0][q + 3 : q + 7].expand(qpos.shape[0], -1),
+                ),
+                dim=1,
             )
-            failed |= (
-                torch.linalg.vector_norm(delta[:, v + 3 : v + 6], dim=1)
-                > config.object_rot_threshold
+            if len(self.layout.task["semantics"]["hands"]) == 2 and torch.all(
+                ref[0][q : q + 3].abs() < 1e-4
+            ):
+                pos, rot = pos * 0, rot * 0
+            failed |= (pos > config.object_pos_threshold) | (
+                rot > config.object_rot_threshold
             )
-        if len(self.layout.object_v):
-            failed |= (
-                delta[:, self.layout.object_v.tolist()].abs()
-                > config.object_rot_threshold
-            ).any(dim=1)
         return failed
 
 

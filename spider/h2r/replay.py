@@ -12,9 +12,9 @@ def load_plan(path, task):
     """Require a complete, finite control sequence on the fixed task clock."""
     path = Path(path)
     binding = read_json(path / "plan.json")
-    if binding.get("format") != "spider-h2r-plan-v3":
+    if binding.get("format") != "spider-h2r-plan-v4":
         raise ValueError(
-            "Regenerate SPIDER plan from --task (requires spider-h2r-plan-v3)"
+            "Regenerate SPIDER plan from --task (requires spider-h2r-plan-v4)"
         )
     if binding.get("plan_id") != identity(
         {k: v for k, v in binding.items() if k != "plan_id"}

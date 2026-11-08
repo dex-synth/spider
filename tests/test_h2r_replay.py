@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
-import torch
 
 from spider.h2r.bundle import PREPARED_FILES, digest, identity, read_json, write_json
 from spider.h2r.replay import Replay, load_plan
@@ -47,7 +46,7 @@ class ReplayTests(unittest.TestCase):
         (root / "resolved_config.yaml").write_text("{}\n")
         binding = {
             **{k: v for k, v in self.task.items() if k != "semantics"},
-            "format": "spider-h2r-plan-v3",
+            "format": "spider-h2r-plan-v4",
             "preparation": {
                 **{
                     k: self.task[k]
@@ -58,7 +57,7 @@ class ReplayTests(unittest.TestCase):
                         "robot_manifest_sha256",
                     )
                 },
-                "format": "spider-h2r-v3",
+                "format": "spider-h2r-v4",
                 "model_source": "task",
                 "files": dict.fromkeys(PREPARED_FILES, "test-digest"),
             },
@@ -80,24 +79,18 @@ class ReplayTests(unittest.TestCase):
                 self.config = SimpleNamespace(
                     sim_dt=0.01, ctrl_dt=0.4, physics_substeps=1
                 )
-                self.source = {"qpos": np.zeros((1, 2))}
-                self.data = SimpleNamespace(
-                    qpos=np.zeros(2), qvel=np.zeros(2), ctrl=np.zeros(2), time=0
-                )
-                self.env = SimpleNamespace(model_cpu=None)
                 self.layout = SimpleNamespace(
-                    names=["wrist", "finger"], controls=lambda q: q
+                    names=["wrist", "finger"],
+                    targets=lambda v: dict(zip(["wrist", "finger"], v, strict=True)),
                 )
-
-            def action(self, step):
-                self.current_ctrl = torch.tensor([step, -step], dtype=torch.float32)
-                return {"wrist": step, "finger": -step}, {
-                    "replanned": step == 0,
-                    "opt_steps": [1],
-                }
-
-            def advance(self):
-                self.data.qpos[:] += 0.01
+                self.segments = [
+                    {
+                        "step": 0,
+                        "ctrl": np.column_stack((np.arange(40), -np.arange(40))),
+                        "qpos": np.zeros((40, 2)),
+                        "qvel": np.zeros((40, 2)),
+                    }
+                ]
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -114,9 +107,17 @@ class ReplayTests(unittest.TestCase):
                 patch("spider.h2r.plan.load_task", return_value=self.task),
                 patch("spider.h2r.plan.load_prepared", return_value=binding),
                 patch("spider.h2r.controller.Controller", FakeController),
-                patch("spider.h2r.plan.mujoco.mj_forward"),
+                patch("spider.h2r.plan.run_fast", side_effect=[True, False]),
             ):
                 plan(prepared, task_path, output, "cpu", 0)
+                failed = root / "failed"
+                with self.assertRaisesRegex(RuntimeError, "denominator"):
+                    plan(prepared, task_path, failed, "cpu", 0)
+                self.assertFalse((failed / "plan.json").exists())
+                self.assertTrue((failed / "trajectory_failed.npz").exists())
+                self.assertEqual(
+                    read_json(failed / "failure.json")["task_end_tick"], 19
+                )
             manifest, data = load_plan(output, self.task)
             self.assertEqual(manifest["native_controls"], 8)
             self.assertEqual(manifest["controls"], 3)

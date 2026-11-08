@@ -1,0 +1,36 @@
+# @package _global_
+dataset_name: arcticv2
+task: s01-box_use_01
+robot_type: xhand
+embodiment_type: bimanual
+data_id: 0
+temperature: 1.0
+num_samples: 1024
+ctrl_dt: 1.5
+knot_dt: 1.0
+horizon: 3.0
+first_ctrl_noise_scale: 2.0
+last_ctrl_noise_scale: 4.0
+improvement_threshold: -1.0
+improvement_check_steps: 2
+max_num_iterations: 4
+base_pos_rew_scale: 0.1
+base_rot_rew_scale: 0.03
+joint_noise_scale: 0.1
+pos_noise_scale: 0.01
+rot_noise_scale: 0.01
+final_noise_scale: 0.01
+object_rot_threshold: 2.5
+max_local_retries: 3
+# Arctic clips start ~2 s before contact (hand approaching, object resting on
+# the table only via friction). The default sanity check holds ctrl_ref[0]
+# for 3 s and requires the object not to drift — that's incompatible with a
+# pre-grasp start frame, so disable it here.
+sanity_check_seconds: 0.0
+# Arctic objects (box / laptop / mixer / notebook / waffleiron) decompose
+# into 25-30 convex parts each. With bimanual xhand the contact + joint-row
+# counts overflow the default per-env limits ("nefc overflow - please
+# increase njmax to ~420"). Bump both above the worst observed value with
+# headroom.
+nconmax_per_env: 256
+njmax_per_env: 768

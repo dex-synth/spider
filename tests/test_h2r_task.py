@@ -181,7 +181,7 @@ class TaskTests(unittest.TestCase):
                         "robot_manifest_sha256",
                     )
                 },
-                "format": "spider-h2r-v3",
+                "format": "spider-h2r-v4",
                 "model_source": "task",
                 "files": {name: digest(root / name) for name in PREPARED_FILES},
             }
@@ -200,6 +200,8 @@ class TaskTests(unittest.TestCase):
                     }
                 },
                 {"format": "spider-h2r-v1"},
+                {"format": "spider-h2r-v2"},
+                {"format": "spider-h2r-v3"},
             ):
                 write_json(root / "h2r_binding.json", {**binding, **mutation})
                 with self.assertRaises(ValueError):

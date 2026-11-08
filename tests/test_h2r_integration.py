@@ -157,7 +157,7 @@ class StateTests(unittest.TestCase):
         np.testing.assert_allclose(actual, expected, atol=1e-9)
 
     def test_reference_keeps_endpoint_and_quaternion(self):
-        """Check the exact endpoint, SLERP and zero-velocity private padding."""
+        """Keep native component interpolation and repeated endpoint velocities."""
         model, _, layout = fixture()
         times = np.array([0.0, 0.1, 0.3])
         qpos = np.tile(model.qpos0, (3, 1))
@@ -175,16 +175,16 @@ class StateTests(unittest.TestCase):
             model, layout, reference, np.array([0, 0.05, 0.3, 0.4])
         )
         np.testing.assert_allclose(p[2:], np.tile(qpos[-1], (2, 1)))
-        np.testing.assert_allclose(np.linalg.norm(p[:, q + 3 : q + 7], axis=1), 1.0)
+        np.testing.assert_allclose(p[1], (qpos[0] + qpos[1]) / 2)
         np.testing.assert_allclose(
             Rotation.from_quat(p[1, q + 3 : q + 7], scalar_first=True).as_rotvec(),
             [0, 0, 0.3],
         )
         np.testing.assert_allclose(c[:, 1], [0, 0.05, 0.3, 0.3])
-        np.testing.assert_allclose(v[-1], 0.0)
-        expected_velocity = np.empty(model.nv)
-        mujoco.mj_differentiatePos(model, expected_velocity, 0.25, p[1], p[2])
-        np.testing.assert_allclose(v[2], expected_velocity)
+        np.testing.assert_allclose(v[-1], reference["qvel"][-1])
+        np.testing.assert_allclose(
+            v[1], (reference["qvel"][0] + reference["qvel"][1]) / 2
+        )
 
     def test_native_reward_and_fixed_noise_equivalence(self):
         """Match native single-hand equations and samples on a compatible layout."""
@@ -349,7 +349,7 @@ class FileAndProtocolTests(unittest.TestCase):
             root = Path(tmp)
             write_json(
                 root / "h2r_binding.json",
-                {"format": "spider-h2r-v3", "task_id": "wrong"},
+                {"format": "spider-h2r-v4", "task_id": "wrong"},
             )
             with self.assertRaisesRegex(ValueError, "task_id"):
                 load_prepared(root, task)
