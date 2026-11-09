@@ -36,6 +36,7 @@ prepared 不携带 XML、mesh 或可覆盖场景的路径。
 ## 开发
 
 - `spider/h2r/`：任务边界、标定、参考、具名控制与评估客户端。
+- `spider/h2r/check.py`：CPU 检查 v4 plan 与统一评估的实际提交控制、初态和时间覆盖，保留提前失败状态。
 - `spider/preprocess/ik_fast.py`：Mink 分阶段求解及原生后处理。
 - `spider/h2r/kinematics.py`：共同目标与 fast IK 的具名／时间映射。
 - `spider/optimizers/sampling_fast.py`：原生最佳样本优化器；复用 `sampling.py`。

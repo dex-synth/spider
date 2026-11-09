@@ -21,10 +21,13 @@ bash scripts/h2r_environment.sh /path/to/spider-env
 以下路径均由调用者提供；输入目录已封存，输出目录必须不存在。先在 bench 环境固定任务与指标：
 
 ```bash
-h2r-bench prepare-evaluation --scene-bundle "$HUMAN" --robot-bundle "$ROBOT" \
-  --physics-hz 240 --control-hz 30 --output "$TASK"
+h2r-bench prepare-evaluation method=spider scene_bundle="$HUMAN" \
+  robot_bundle="$ROBOT" output="$TASK"
 h2r-bench prepare-metrics task="$TASK" output="$SPEC"
 ```
+
+新任务默认 300 Hz 物理、100 Hz 控制，每个原生位置目标保持 3 个物理 tick；计分仍使用共同参考时钟。
+任务准备与评估都指定 `method=spider`，评估服务会核对封存任务的控制频率。
 
 然后在 SPIDER 环境准备：
 
@@ -67,7 +70,7 @@ CUDA_VISIBLE_DEVICES="$GPU" python -m spider.h2r.plan \
 在 bench 的评估环境启动服务：
 
 ```bash
-h2r-bench evaluate-server task="$TASK" spec="$SPEC" mode=sim backend=mujoco \
+h2r-bench evaluate-server method=spider task="$TASK" spec="$SPEC" mode=sim backend=mujoco \
   num_trajectories=10 'seeds=[0,1,2,3,4,5,6,7,8,9]' socket="$SOCKET" output="$ROLLOUT" \
   timeout_s=900 video.enabled=false
 ```
@@ -108,7 +111,7 @@ h2r-bench summarize-evaluations --batch "$BATCH"
 - **参考时间边界**：上游 `process_config` 先从基础 .02 s 求 ref_steps，再读数据集 ref_dt；此顺序保留在插值因子中。上游 H*n 插值数组会重置起点并改变时间跨度；这里将每个插值值明确对应到原始窗口中心的源时间，再采样到私有 sim_dt 网格。完整任务的前后端点保持，不裁剪共同任务或改变其速度。这是显式时间边界转换，不能声称与上游错误计时逐帧等价。
 - **规划**：最后一轮使用真实最佳样本；优化参考为 `[s+1:s+horizon+1]`，初始化控制为 `[0:horizon]`。状态快照推进、移窗、重试、boost 与锚点回退均发生在私有世界。普通成功不会自动清除 local boost；越过恢复锚点后才按上游重置。
 - **初始化与物理**：方法平滑参考与共同物体初态分开。共同初态使用原始物体姿态、IK 机器人位置、零速度、无 warm-up。上游 sanity check 在私有 CPU 模型以 .002 s 积分检查最大 root 漂移，默认 3 s／.01 m／.3 rad。评估场景、MuJoCo backend 和初始化规则不变。
-- **控制时钟**：私有规划保持 100 Hz，重规划间隔按数据集配方。既有 HOT3D task 为 240 Hz 物理／30 Hz 发布；零阶保持选择过去的原生动作。30 Hz 不能执行全部 100 Hz 动作变化，该既有部署限制随 plan 记录，不宣称执行轨迹完全等价。
+- **控制时钟**：私有规划保持 100 Hz，重规划间隔按数据集配方。新任务以 `method=spider` 选择 300 Hz 物理／100 Hz 发布。历史 HOT3D task 的 240 Hz 物理／30 Hz 发布只用于复查旧结果：零阶保持会丢弃部分原生动作变化，不能声称完整执行了 100 Hz 控制。显式重建历史条件时，在任务准备和评估两端均声明 `method=spider method.control_hz=30`，准备时另设 `physics_hz=240`；新频率任务须重新 prepare／plan，不能修改旧 task 或 plan。
 - **具名映射**：Sharpa 双手／右手虚拟腕、task v1/v2/v3、多 free root 和被动 hinge。reward/noise 的 wrist/finger/root 地址由 task 解析，被动 hinge 使用 object rotation 权重；成功门槛保留原生 root 检查。没有资产 fallback，不删除 context 物体。
 - **明确例外**：按用户要求，`num_dr=num_dyn=1` 使用 nominal 参数，不保留上游 `linspace(...,1)` 产生的非零偏移。其他 DR 数量明确拒绝。contact guidance/Gibbs 在上游 fast 不受支持；保持关闭。不顺带修正上游 NaN 选择或算术四元数处理等缺陷。
 - **部署**：每个 seq 离线规划一次，sim/sim-dr 复用同一控制。v4 不支持 `--prepared` 在线入口，因为已执行的真实评估动作无法回退；不能将删掉回退的循环称为完整 upstream fast。
@@ -116,6 +119,17 @@ h2r-bench summarize-evaluations --batch "$BATCH"
 通信协议为 `h2r-evaluation-v1`：4-byte 大端长度 + JSON，`hello/start/frames/step`。仅返回 `joint_targets`，没有 root wrench、物体辅助力、评估 reset 或方法提前终止。每次 eval 的 binding 与控制日志记录相同 `plan_id`，规划耗时与 eval 耗时分别保存。
 
 ## 检查与已验证范围
+
+评估结束后，在 SPIDER 环境用 CPU 检查 v4 plan 与 bench 实际接收、记录的控制：
+
+```bash
+python -m spider.h2r.check --plan "$PLAN" --task "$TASK" \
+  --run "$ROLLOUT" --output "$REPLAY_CHECK"
+```
+
+默认核对所有 seeds；`--episode seed-0` 可只查一个。检查 task／plan 身份、具名初态、完整 plan 时间网格、逐次提交控制和 physical 记录中的 `submitted_target`，同时核对 JSONL／NPZ 的控制记录。适用于 `sim` 和 `sim-dr`，不要求受延迟、限幅影响的 `effective_target` 等于 plan，也不把规划状态当成实际评估状态。
+
+提前失败仍检查已记录前缀，并报告 `reason`、`coverage` 和 `complete=false`；`control_consistent=true` 只说明该前缀控制一致，完整执行须同时检查 `full_time_coverage` 与 `complete`，操作成功仍由 bench 指标判断。文件缺失、控制不一致或虚报完整时域会使检查报错。旧在线诊断参数 `--prepared/--controller-log/--device/--steps` 已移除。
 
 ```bash
 python -m unittest discover -s tests -p 'test_h2r*.py' -v
@@ -125,7 +139,7 @@ python -m unittest discover -s tests -p 'test_h2r*.py' -v
 
 边界测试覆盖乱序 actuator、多 root+hinge、body 原点速度、源姿态转换、封存完整性和多 episode 终止。fast 行为测试覆盖数据集配置、全列过滤与速度保持、固定轮数／4 次 attempt、最佳样本选择、快照推进、控制移窗、local boost、锚点恢复、失败截断和非整比发布。
 
-源码数值对照与真实任务短跑的结果保存在 bench 对应 `runs/checks/`；单元测试通过不代表全序列成功或论文性能复现。历史在线／论文 IK 产物按各自运行记录解释，不混用为新版 fast 结果。
+源码数值对照与真实任务验证的结果保存在 bench 对应 `runs/checks/`；单元测试通过不代表全序列成功或论文性能复现。历史在线／论文 IK 产物按各自运行记录解释，不混用为新版 fast 结果。
 
 ## 任务与模型边界检查
 
