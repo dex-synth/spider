@@ -21,7 +21,7 @@ H2R 保留其 fast IK、sampling MPC、最佳样本选择及重试／回退语�
 | 机器人映射 | 依赖 embodiment 和固定状态切片 | 按 task 的关节、actuator、free root、被动 hinge 名称映射；reward 公式不变，被动 hinge 使用物体旋转权重 |
 | 手部标定 | 原生机器人 tracking sites | 新增 Sharpa 双手／右手虚拟腕的 MANO-to-wrist 固定旋转；参数在 `spider/h2r/config/sharpa_wave.json`，其他机器人明确拒绝 |
 | 配置入口 | Hydra／原生数据集配置与模型路径 | `spider/h2r/settings.py` 只接收 `ik`、`mpc` 算法字段；任务、机器人、资产与速度由 bench 指定 |
-| 规划执行 | runner 在自己的仿真世界中优化、推进与回退 | `plan` 在私有 MJWarp 世界执行完整 fast 循环；保存所选样本的控制、post-step 状态和快照，不重新仿真均值控制 |
+| 执行入口与输出 | `run_mjwp_fast.py` 运行原生 fast 流程并保存轨迹 | `spider.h2r.plan` 封装相同 fast 流程，输出绑定共同 task、可供独立评估回放的封存 plan |
 | 评估部署 | 原生 rollout 与方法内计分 | `evaluation` 通过 `h2r-evaluation-v1` 提交具名 `joint_targets`；bench 独立推进物理、施加扰动、终止并计分 |
 | 产物校验 | 原生轨迹与日志 | 新增 task／plan 身份、文件 hash、控制时钟与完整覆盖校验；prepared 不保存场景，旧 v1–v3 产物必须重新生成 |
 | 回放诊断 | 无对应统一评估检查器 | `spider.h2r.check` 在 CPU 核对 plan、初始化、提交控制及 physical JSONL／NPZ；区分有效失败前缀和完整执行 |
@@ -49,6 +49,8 @@ HOT3D 没有专用 override，使用基础配方。以下均为未传自定义�
 带手指控制噪声 `0.2` 的 IK 前向 rollout 仅作诊断，不作为 MPC 参考。
 
 ### MPC
+
+上游 fast 与 H2R 均选择最佳样本，复用其控制、post-step 状态和快照推进，并保留重试／回退；均不重新仿真均值控制。这些属于保留的算法行为，接口差异是上表中的入口封装与产物交接。
 
 所有配方均使用 `num_samples=1024`、`sim_dt=0.01 s`（100 Hz 动作）。`ctrl_dt` 是每次优化后执行的时长／重规划间隔，不是单个动作的保持时间。
 
