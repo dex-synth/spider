@@ -4,6 +4,8 @@
 
 算法、标定、规划与回放都在本仓库；bench 持有评估世界、初始化、时钟、终止和共同指标。部署方式记作 `offline-control-replay`。此入口属于显式 H2R 任务适配，不能当作原生 ARCTIC/XHand 配方或论文性能复现。
 
+与 original 的实现、参数及时间边界对照见 [上游差异说明](upstream-differences.md)。
+
 ## 环境
 
 使用独立 Python 3.12 环境，不需要安装 h2r_bench。常规安装使用 `uv sync --extra h2r`；本机 CUDA 12 配方使用已有约束：
