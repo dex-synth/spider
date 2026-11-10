@@ -11,6 +11,7 @@ import numpy as np
 
 from spider.h2r.bundle import PREPARED_FILES, digest, identity, read_json, write_json
 from spider.h2r.replay import Replay, load_plan
+from spider.h2r.settings import PIPELINE
 
 
 class ReplayTests(unittest.TestCase):
@@ -102,6 +103,7 @@ class ReplayTests(unittest.TestCase):
             prepared.mkdir()
             self.artifact(prepared)
             binding = read_json(prepared / "plan.json")["preparation"]
+            binding["pipeline"] = PIPELINE
             write_json(prepared / "h2r_binding.json", binding)
             with (
                 patch("spider.h2r.plan.load_task", return_value=self.task),
@@ -119,6 +121,7 @@ class ReplayTests(unittest.TestCase):
                     read_json(failed / "failure.json")["task_end_tick"], 19
                 )
             manifest, data = load_plan(output, self.task)
+            self.assertEqual(manifest["preparation"]["pipeline"], PIPELINE)
             self.assertEqual(manifest["native_controls"], 8)
             self.assertEqual(manifest["controls"], 3)
             np.testing.assert_array_equal(
@@ -132,6 +135,7 @@ class ReplayTests(unittest.TestCase):
             root = Path(tmp)
             self.artifact(root)
             binding, data = load_plan(root, self.task)
+            self.assertNotIn("pipeline", binding["preparation"])
             for mode in ("sim", "sim-dr"):
                 for seed in range(10):
                     replay = Replay(self.task, binding, data)

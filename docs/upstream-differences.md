@@ -1,12 +1,12 @@
 # 相对 original SPIDER 的 H2R 适配
 
-本文记录当前 H2R v4 实现相对 original 的差异，核对日期为 2026-11-09。
+本文记录当前 H2R v4 实现相对 original 的差异，核对日期为 2026-11-10。
 
 | 对照对象 | 版本与范围 |
 | --- | --- |
 | original | `facebookresearch/spider@44717007de41cbef7565dff7ff9f4453557a2d3d`；本机 `baselines/spider` |
-| H2R 兼容版 | `dex-synth/spider@e6e07f114065e1bdfe170985792834667610e376`；本机 `h2r_bench_baselines/spider` |
-| 共同评估 | `h2r_bench@f0b147f7f66b559762889bf1bc3329d27fd0419d` |
+| H2R 兼容版 | `dex-synth/spider`，v4 + `sign-continuous-mean-nlerp-v1`；本机 `h2r_bench_baselines/spider`，具体 revision 封存在 binding 中 |
+| 共同评估 | `h2r_bench` 封存的 task 与独立 physical rollout；新规范参考声明 `wxyz-unit-continuous-v1` |
 
 选定的上游流水线是 `spider/preprocess/ik_fast.py` → `examples/run_mjwp_fast.py`。
 H2R 保留其 fast IK、sampling MPC、最佳样本选择及重试／回退语义，部署为 **离线控制回放**（`offline-control-replay`）。
@@ -43,9 +43,10 @@ HOT3D 没有专用 override，使用基础配方。以下均为未传自定义�
 | 初始收敛 | wrist-only 200 步，再加入 fingertips 300 步 |
 | 目标权重 | wrist position `0.3`、wrist orientation `3.0`、finger position `10.0`、posture `0.01` |
 | 阻尼 | FrameTask `lm_damping=1.0`；求解器 `damping=1e-5` |
-| 参考处理 | 裁掉原始最后一帧；全部 qpos 列做 3 帧 valid 平均，再差分并丢弃首帧 |
+| 参考处理时序 | 裁掉原始最后一帧；3 帧 valid 平均，再差分并丢弃首帧；H2R 的四元数数值修正见下文 |
 
-物体 qpos 在 IK 每步直接写入方法参考；保留原生四元数分量平均和插值，不新增 SLERP、碰撞避免或速度约束。
+物体 qpos 在 IK 每步直接写入方法参考。H2R 在 free-root 四元数平滑前归一化并对齐符号、平均后重新归一化，再差分 qvel；三处 qpos 插值保留原位置与分量线性方式，但在插值前对齐符号、插值后归一化，形成 NLERP。平移、scalar joints、ctrl 与独立 qvel 插值保持原处理；不新增 SLERP、碰撞避免或速度约束。
+这项明确授权的数值修正避免 `q/-q` 抵消与非单位四元数，不能称为与 original 逐值等价。近零平均和非法源四元数明确拒绝，不填 identity。它仅作用于方法私有参考，不改写共同物体初态或目标。
 带手指控制噪声 `0.2` 的 IK 前向 rollout 仅作诊断，不作为 MPC 参考。
 
 ### MPC
@@ -85,13 +86,14 @@ fast 每个 attempt 跑满配置轮数，最多 4 个 attempt，不使用 improv
 | hand solver／接触覆盖 | 强设 `iterations=20`、`ls_iterations=50`、`o_solref=[0.02,1]`、`o_solimp=[0,0.95,0.03,0.5,2]`、`implicitfast` | 删除这些方法侧覆盖，继承 task 的 solver、接触、惯量、执行器与限幅；规划模型只改变私有 timestep |
 | 初始状态 | 从平滑参考的 qpos/qvel 初始化，先执行一次 `mj_step` 再将时间归零 | 使用共同原始物体姿态、IK 机器人位置、零速度；实际起点无 warm-up。新增关节限位和 task 穿透门槛检查，失败不生成可部署 binding |
 | `ref_dt` 来源 | `task_info.json`，缺省 `0.02 s` | 从共同示范时间轴取得真实采样周期；例如本次 HOT3D 为 `1/30 s`，不强制改成 50 Hz |
-| 裁剪／插值时间 | filtered 参考重新从零编号；先按基础 `0.02 s` 求 `ref_steps`，后读取数据集周期 | 保留原生插值因子与分量值，但显式记录窗口中心的源时间，再采样到私有网格；前后端点保持，速度独立插值、不重新差分 |
+| 裁剪／插值时间 | filtered 参考重新从零编号；先按基础 `0.02 s` 求 `ref_steps`，后读取数据集周期 | 保留原生插值因子与非旋转分量值，旋转使用 NLERP；显式记录窗口中心的源时间，再采样到私有网格；前后端点保持，速度独立插值、不在查询时重新差分 |
 | 规划终点 | 默认 `len(ref) - horizon_steps - ctrl_steps` | 规划到共同 `task.end_tick`；末端参考保持，发布完整任务所需控制，不缩短共同计分时域 |
 | 独立评估频率 | 无 H2R 评估时钟 | 新任务 `method=spider` 使用 300 Hz 物理／100 Hz 控制，每个原生动作保持 3 tick；最后一个动作可不足 3 tick |
 
 因此，当前结果不能称为与原生场景、初态和错误计时逐帧等价。保留的是选定 fast 算法与配方，评估条件服从共同任务。
 历史 240 Hz 物理／30 Hz 控制任务仍按其封存条件解释；零阶保持会丢弃部分 100 Hz 动作变化，新任务必须重新 prepare／plan。
 plan 中的 `qpos/qvel` 对应控制执行后的 `source_time_s + native_action_dt_s`，不作为发布时刻的评估状态。
+新规划要求 prepared 标记 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，缺失或未知时重新 prepare。文件结构仍为 v4；历史完整 v4 plan 保留原身份用于 CPU 回放与审计，不自动升级其旋转处理声明。
 
 ## 工程范围与验证边界
 
@@ -101,4 +103,6 @@ plan 中的 `qpos/qvel` 对应控制执行后的 `source_time_s + native_action_
 
 方法继续使用独立 Python 3.12 环境，不依赖 bench Python 包。新增 `h2r` extra 显式声明 SciPy、PyYAML、DAQP；本机 CUDA 12 安装配方固定 MuJoCo `3.7.0`、mujoco-warp `3.7.0.1`、Warp `1.12.1`、Torch `2.7.1`、Mink `1.1.0`，完整约束见 `scripts/h2r_runtime_constraints.txt`。评估环境独立，不要求与规划环境同版本。
 
-当前版本已通过 36 项测试。完整 HOT3D keyboard／Sharpa 双手任务使用默认规划配方，在 `sim`、`sim-dr` 各验证 seed 0，同一 plan 的 504 个控制均完整执行并通过共同评估。该验证不代表所有数据集、机器人或多 seed 成绩；详细证据位于 bench 的 `runs/checks/spider-v4-replay-20261109/`。
+旋转修正前的 v4 已通过 36 项测试。该历史版本的完整 HOT3D keyboard／Sharpa 双手任务使用默认规划配方，在 `sim`、`sim-dr` 各验证 seed 0，同一 plan 的 504 个控制均完整执行并通过共同评估；证据位于 bench 的 `runs/checks/spider-v4-replay-20261109/`。该结果不代表新旋转处理或所有数据集、机器人及多 seed 成绩。
+
+NLERP 修正通过 40 项 H2R 测试及 ARCTIC `s01/box_use_01` 的 CPU 数组回归：问题窗口的完美源姿态跟随误差从 `3.138874 rad` 降至 `0.012080 rad`，原 tracking check 不再错误拒绝；非旋转位置、控制和对应差分速度保持一致。记录位于 bench 的 `runs/checks/spider-quaternion-nlerp-20261110/`。尚未重新运行该修正后的完整 plan／evaluation。

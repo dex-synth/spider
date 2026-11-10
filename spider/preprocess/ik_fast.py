@@ -3,6 +3,8 @@
 import mink
 import numpy as np
 
+from spider.quaternion import normalize_qpos
+
 
 def make_tasks(
     configuration,
@@ -104,17 +106,24 @@ def solve(
 
 
 def postprocess(model, qpos, dt, window):
-    """Native valid scalar moving average, then MuJoCo differences and crop."""
+    """Native mean/crop with quaternion sign alignment and normalized output."""
     import mujoco
 
     if len(qpos) <= window:
         raise ValueError("Fast IK needs more input frames than its filter window")
+    roots = {
+        model.joint(i).name: (int(model.jnt_qposadr[i]), int(model.jnt_dofadr[i]))
+        for i in range(model.njnt)
+        if model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
+    }
+    qpos = normalize_qpos(qpos, roots)
     filtered = np.column_stack(
         [
             np.convolve(column, np.ones(window) / window, mode="valid")
             for column in qpos.T
         ]
     )
+    filtered = normalize_qpos(filtered, roots, require_unit=False)
     qvel = np.zeros((len(filtered) - 1, model.nv))
     for i in range(1, len(filtered)):
         mujoco.mj_differentiatePos(model, qvel[i - 1], dt, filtered[i - 1], filtered[i])

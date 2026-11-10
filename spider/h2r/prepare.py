@@ -134,7 +134,7 @@ def prepare(task_path, output, config=None):
     binding = {
         "format": "spider-h2r-v4",
         "pipeline": {**PIPELINE, "dataset_override": recipe(reference.get("dataset"))},
-        "reference_mapping": "dataset-rate; native-all-column-filter; source-time-mapped-linear-interpolation; endpoint-value-hold",
+        "reference_mapping": "dataset-rate; sign-aligned-normalized-quaternion-mean; source-time-mapped-linear-and-nlerp; endpoint-value-hold",
         "method_revision": revision,
         "method_worktree_dirty": dirty,
         "planning_backend": "mjwarp",

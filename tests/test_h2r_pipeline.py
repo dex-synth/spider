@@ -108,7 +108,7 @@ class PipelineTests(unittest.TestCase):
                 settings(path)
 
     def test_filter_and_reference_values(self):
-        """Preserve all-column filtering, interpolation and endpoint velocity."""
+        """Preserve scalar filtering, interpolation and endpoint velocity."""
         model, _, layout = fixture()
         qpos = np.tile(model.qpos0, (8, 1))
         root, _ = layout.root_indices["a"]

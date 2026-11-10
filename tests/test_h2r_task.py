@@ -22,7 +22,7 @@ from spider.h2r.bundle import (
     write_json,
 )
 from spider.h2r.scene import planning_model
-from spider.h2r.settings import settings
+from spider.h2r.settings import PIPELINE, settings
 from spider.simulators.mjwp import setup_mj_model
 
 
@@ -182,6 +182,7 @@ class TaskTests(unittest.TestCase):
                     )
                 },
                 "format": "spider-h2r-v4",
+                "pipeline": PIPELINE,
                 "model_source": "task",
                 "files": {name: digest(root / name) for name in PREPARED_FILES},
             }
@@ -191,6 +192,9 @@ class TaskTests(unittest.TestCase):
                 '<mujoco><option gravity="0 0 0"/></mujoco>'
             )
             for mutation in (
+                {"pipeline": None},
+                {"pipeline": {}},
+                {"pipeline": {"rotation_processing": "unknown"}},
                 {"planning_scene": "custom.xml"},
                 {"model_source": "custom.xml"},
                 {

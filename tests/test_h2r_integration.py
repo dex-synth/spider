@@ -157,7 +157,7 @@ class StateTests(unittest.TestCase):
         np.testing.assert_allclose(actual, expected, atol=1e-9)
 
     def test_reference_keeps_endpoint_and_quaternion(self):
-        """Keep native component interpolation and repeated endpoint velocities."""
+        """Normalize rotations while keeping scalars and endpoint velocities."""
         model, _, layout = fixture()
         times = np.array([0.0, 0.1, 0.3])
         qpos = np.tile(model.qpos0, (3, 1))
@@ -175,7 +175,10 @@ class StateTests(unittest.TestCase):
             model, layout, reference, np.array([0, 0.05, 0.3, 0.4])
         )
         np.testing.assert_allclose(p[2:], np.tile(qpos[-1], (2, 1)))
-        np.testing.assert_allclose(p[1], (qpos[0] + qpos[1]) / 2)
+        expected = (qpos[0] + qpos[1]) / 2
+        expected[q + 3 : q + 7] /= np.linalg.norm(expected[q + 3 : q + 7])
+        np.testing.assert_allclose(p[1], expected)
+        np.testing.assert_allclose(np.linalg.norm(p[:, q + 3 : q + 7], axis=1), 1)
         np.testing.assert_allclose(
             Rotation.from_quat(p[1, q + 3 : q + 7], scalar_first=True).as_rotvec(),
             [0, 0, 0.3],

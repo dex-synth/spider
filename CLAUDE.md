@@ -9,6 +9,7 @@
 - 使用独立 Python 3.12 环境与本仓库依赖。开发环境见 `scripts/h2r_environment.sh`，不要升级共享环境中的其他方法依赖。
 - 修改输入／模型边界时验证 task 文件闭包、物理参数保持和拒绝路径；修改算法时检查原生语义。
 - Baseline 只修正相对所选上游流水线的适配错误；原生已有的算法缺陷、无碰撞避免约束等保持原样，不以提升成绩为由增加算法能力。原论文入口与后来的 fast 变体须分别标明，不能混合其步骤或默认值后声称完整复现。
-- 当前默认为上游 fast：按数据集读取固定 YAML，最后一轮取最佳样本并从快照推进，保留重试／回退。唯一授权算法例外是 `num_dr=1` 不施加上游非零参数偏移；不顺带修其他原生缺陷。
+- 当前默认为上游 fast：按数据集读取固定 YAML，最后一轮取最佳样本并从快照推进，保留重试／回退。明确授权的例外是 `num_dr=1` 不施加上游非零参数偏移，以及 free-root 四元数的符号对齐、平滑后归一化与 NLERP；保持窗口、插值位置、时钟及独立速度插值，不顺带修其他原生缺陷。
+- 新规划要求 prepared 的 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，缺失或未知时重新 prepare；历史完整 v4 plan 可按封存身份 CPU 回放，不重标为修正后的结果。
 - 聚焦检查：`python -m unittest discover -s tests -p 'test_h2r*.py' -v`。
 - 代码使用 Ruff、88 列、Google docstrings；面向 Agent 的说明使用中文。

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .settings import PIPELINE
+
 
 def read_json(path):
     """Read a JSON object from a local artifact."""
@@ -178,9 +180,17 @@ def validate_prepared(binding, task):
 
 
 def load_prepared(path, task):
-    """Validate method artifacts against the selected evaluation task."""
+    """Require current reference processing for new planning, not sealed replay."""
     path = Path(path).resolve()
     binding = read_json(path / "h2r_binding.json")
     validate_prepared(binding, task)
+    pipeline = binding.get("pipeline")
+    if not isinstance(pipeline, dict) or (
+        pipeline.get("rotation_processing") != PIPELINE["rotation_processing"]
+    ):
+        raise ValueError(
+            "Regenerate SPIDER preparation from --task "
+            f"(requires rotation_processing={PIPELINE['rotation_processing']})"
+        )
     verify_files(path, binding["files"])
     return binding

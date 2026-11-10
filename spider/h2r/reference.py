@@ -4,6 +4,8 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from spider.quaternion import normalize_qpos
+
 from .model import finite
 
 
@@ -67,15 +69,22 @@ def velocities(model, times, qpos):
 
 
 def component_sample(times, values, query):
-    """Independent scalar interpolation, including quaternion and velocity columns."""
+    """Independent scalar interpolation with endpoint holds."""
     return np.column_stack([np.interp(query, times, column) for column in values.T])
 
 
+def qpos_sample(layout, times, values, query):
+    """Keep scalar interpolation; use sign-aligned NLERP for free-root rotations."""
+    source = normalize_qpos(values, layout.root_indices)
+    sampled = component_sample(times, source, query)
+    return normalize_qpos(sampled, layout.root_indices, require_unit=False)
+
+
 def native_reference(layout, arrays, config):
-    """Native io.interp values plus explicit source-time mapping to the task clock.
+    """Native scalar interpolation and source times, with normalized rotations.
 
     Upstream labels H*n align_corners samples as sim_dt and re-zeros the crop.
-    Retain those values, but map their source times explicitly so that a dataset
+    Retain scalar values, but map source times explicitly so that a dataset
     rate or filter cannot change the shared task speed or remove its endpoints.
     """
     import torch
@@ -83,7 +92,10 @@ def native_reference(layout, arrays, config):
     from spider.interp import interp
 
     times = arrays["filtered_time_s"]
-    values = [arrays["filtered_qpos"], arrays["filtered_qvel"]]
+    values = [
+        normalize_qpos(arrays["filtered_qpos"], layout.root_indices),
+        arrays["filtered_qvel"],
+    ]
     values.append(layout.controls(values[0]))
     tensors = [torch.as_tensor(v, dtype=torch.float32) for v in values]
     if config.ref_dt > config.sim_dt:
@@ -98,20 +110,22 @@ def native_reference(layout, arrays, config):
         factor = int(config.sim_dt / config.ref_dt)
         tensors = [v[::factor] for v in tensors]
         source_times = times[::factor]
-    return {
+    result = {
         "time_s": source_times,
         **{
             k: v.numpy() for k, v in zip(("qpos", "qvel", "ctrl"), tensors, strict=True)
         },
     }
+    result["qpos"] = normalize_qpos(
+        result["qpos"], layout.root_indices, require_unit=False
+    )
+    return result
 
 
 def sample_reference(model, layout, arrays, query):
-    """Sample all native reference channels independently; hold endpoint velocities."""
-    qpos, qvel = [
-        component_sample(arrays["time_s"], arrays[key], query)
-        for key in ("qpos", "qvel")
-    ]
+    """Sample NLERP poses and independent velocities, retaining endpoint holds."""
+    qpos = qpos_sample(layout, arrays["time_s"], arrays["qpos"], query)
+    qvel = component_sample(arrays["time_s"], arrays["qvel"], query)
     ctrl = component_sample(
         arrays["time_s"], arrays.get("ctrl", layout.controls(arrays["qpos"])), query
     )

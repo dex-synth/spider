@@ -7,11 +7,11 @@ import numpy as np
 
 from spider.preprocess.ik_fast import postprocess, solve
 
-from .reference import component_sample
+from .reference import component_sample, qpos_sample
 
 
 def solve_kinematics(spec, layout, reference_q, times, wrists, tips, sites, options):
-    """Keep native crop/filter values with their original physical timestamps."""
+    """Keep native filter timing, correcting quaternion signs and unit norms."""
     dt = options["ref_dt"]
     if not np.allclose(np.diff(times), dt, rtol=1e-6, atol=1e-9):
         raise ValueError("Fast IK requires the declared uniform dataset reference rate")
@@ -34,7 +34,7 @@ def solve_kinematics(spec, layout, reference_q, times, wrists, tips, sites, opti
     valid_times = (
         np.arange(len(filtered)) + (options["average_frame_size"] - 1) / 2 + 1
     ) * dt
-    qpos = component_sample(valid_times, filtered, times)
+    qpos = qpos_sample(layout, valid_times, filtered, times)
     qvel = component_sample(valid_times, filtered_v, times)
     if not np.isfinite(qpos).all() or not np.isfinite(qvel).all():
         raise ValueError("Non-finite fast IK reference")

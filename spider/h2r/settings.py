@@ -161,5 +161,6 @@ PIPELINE = {
     "mpc_entry": "examples/run_mjwp_fast.py",
     "config_source": "examples/config/default.yaml + dataset fast override + Config",
     "recipe": "fast-mink-best-sample-h2r",
+    "rotation_processing": "sign-continuous-mean-nlerp-v1",
     "num_dr_1": "nominal; upstream single-world nonzero offsets intentionally disabled",
 }
