@@ -71,29 +71,36 @@ class MPCSettings:
 
 
 CONFIG_DIR = Path(__file__).with_name("config")
+# Upstream fast override per benchmark dataset; None is the pinned base default
+# (upstream publishes no fast override for that dataset).
 DATASET_RECIPES = {
-    "arctic": "arcticv2",
-    "arcticv2": "arcticv2",
-    "oakink2": "oakinkv2",
-    "oakinkv2": "oakinkv2",
-    "oakink": "oakink",
-    "gigahand": "gigahand",
+    "arctic": "override/arcticv2_fast.yaml",
+    "oakink2": "override/oakinkv2_fast.yaml",
+    "hot3d": None,
+    "taco": None,
 }
 
 
 def recipe(dataset):
-    """Select only the matching upstream fast override, never borrow a recipe."""
-    name = DATASET_RECIPES.get(dataset)
-    return f"override/{name}_fast.yaml" if name else None
+    """Select the dataset's own upstream recipe; never borrow or fall back."""
+    if dataset not in DATASET_RECIPES:
+        raise ValueError(
+            f"No SPIDER recipe for dataset {dataset!r}; "
+            f"expected one of {sorted(DATASET_RECIPES)}"
+        )
+    return DATASET_RECIPES[dataset]
 
 
 def settings(path=None, *, dataset=None, ref_dt=None):
-    """Resolve pinned YAMLs, then explicit overrides; retain dataset reference rate."""
+    """Resolve pinned YAMLs, then explicit overrides; retain dataset reference rate.
+
+    `dataset=None` applies no dataset recipe: it re-reads a resolved configuration.
+    """
     raw = yaml.safe_load(Path(path).read_text()) if path else {}
     if not isinstance(raw, dict) or set(raw) - {"ik", "mpc"}:
         raise ValueError("Settings must contain only ik and mpc mappings")
     native = yaml.safe_load((CONFIG_DIR / "default.yaml").read_text())
-    if recipe(dataset):
+    if dataset is not None and recipe(dataset):
         native.update(yaml.safe_load((CONFIG_DIR / recipe(dataset)).read_text()))
     result = {}
     for name, cls in (("ik", IKSettings), ("mpc", MPCSettings)):
@@ -140,7 +147,7 @@ def settings(path=None, *, dataset=None, ref_dt=None):
     return result
 
 
-def validate_clock(options, task):
+def validate_clock(options):
     """Native action grids must be integral; dataset sampling need not be."""
     steps = {}
     for name in ("horizon", "knot_dt", "ctrl_dt"):

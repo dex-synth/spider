@@ -4,24 +4,28 @@ from pathlib import Path
 
 import mujoco
 
-from .bundle import load_task, local_file, read_json
+from .h2r_io.files import read_json
+
+# Hand tracking frames by robot name; sides are selected by the task.
+CALIBRATIONS = {"sharpa_wave": "config/sharpa_wave.json"}
 
 
 def calibration_for(task):
     """Select method-specific hand tracking frames, never physical parameters."""
-    calibration = read_json(Path(__file__).parent / "config/sharpa_wave.json")
-    if task["robot_name"] not in calibration["robots"]:
-        raise ValueError(f"No SPIDER hand calibration for {task['robot_name']}")
+    if task.robot.name not in CALIBRATIONS:
+        raise ValueError(f"No SPIDER hand calibration for robot {task.robot.name!r}")
+    calibration = read_json(Path(__file__).parent / CALIBRATIONS[task.robot.name])
+    missing = set(task.hand_sides) - calibration.keys()
+    if missing:
+        raise ValueError(f"No SPIDER hand calibration for hands {sorted(missing)}")
     return calibration
 
 
-def planning_spec(task_path, task, calibration):
-    """Compile the task with massless tracking sites; do not write a scene copy."""
-    if load_task(task_path) != task:
-        raise ValueError("Planning task identity changed")
-    spec = mujoco.MjSpec.from_file(str(local_file(task_path, task["scene"])))
+def planning_spec(task, calibration):
+    """Add massless tracking sites to the task scene; do not write a scene copy."""
+    spec = mujoco.MjSpec.from_file(str(task.scene_xml))
     wrist_sites, finger_sites = [], []
-    for side in task["semantics"]["hands"]:
+    for side in task.hand_sides:
         frames = calibration[side]
         bodies = [frames["wrist_body"], *frames["fingertip_bodies"]]
         names = [f"h2r_{side}_wrist", *[f"h2r_{side}_tip_{i}" for i in range(5)]]
@@ -37,7 +41,7 @@ def planning_spec(task_path, task, calibration):
     return spec, wrist_sites, finger_sites
 
 
-def planning_model(task_path, task, calibration):
+def planning_model(task, calibration):
     """Compile the unchanged physical task plus tracking sites for MPC."""
-    spec, wrists, fingers = planning_spec(task_path, task, calibration)
+    spec, wrists, fingers = planning_spec(task, calibration)
     return spec.compile(), wrists, fingers

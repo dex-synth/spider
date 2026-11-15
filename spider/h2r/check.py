@@ -1,13 +1,19 @@
-"""Audit a v4 offline plan against evaluator-owned control and rollout records."""
+"""Audit an offline plan against evaluator-owned control and rollout records."""
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import numpy as np
 
-from .bundle import arrays, load_task, read_json, write_json
+from .artifacts import arrays
+from .evaluation import METHOD
+from .h2r_io import load_task
+from .h2r_io.files import read_json, write_json
 from .replay import load_plan
+
+ROLLOUT_FORMAT = "h2r-rollout-v2"
 
 
 def json_lines(path):
@@ -26,96 +32,100 @@ def target_vector(targets, names):
     return values
 
 
-def check_episode(directory, task, data, initial, commands, result):
-    """Check the recorded prefix without treating an early failure as completion."""
-    names = task["semantics"]["joint_names"]
+def check_episode(directory, clock, names, targets, initial, commands, result):
+    """Check the recorded prefix without treating an early failure as completion.
+
+    `clock` holds the run's own `control_ticks`, `end_tick` and recording stride.
+    """
+    ticks, end_tick, stride = clock
     for index, command in enumerate(commands):
         tick = command["tick"]
         if (
             type(tick) is not int
-            or index >= len(data["ticks"])
-            or tick != data["ticks"][index]
+            or index >= len(targets)
+            or tick != index * ticks
             or tick > result["ended_tick"]
         ):
             raise ValueError("Missing, repeated or out-of-order control tick")
         if not np.array_equal(
-            target_vector(command["joint_targets"], names), data["joint_targets"][index]
+            target_vector(command["joint_targets"], names), targets[index]
         ):
             raise ValueError(f"Submitted command differs from plan at tick {tick}")
 
+    # The rollout records the physical state on the common recording grid only.
     rows = json_lines(directory / "physical.jsonl")
-    last_tick = len(rows) - 1 if rows else None
-    if result["last_valid_tick"] != last_tick or len(rows) > task["end_tick"] + 1:
+    recorded = [row["tick"] for row in rows]
+    if recorded != [i * stride for i in range(len(rows))]:
+        raise ValueError("Physical recording is not a prefix of the recording grid")
+    last_recorded = recorded[-1] if rows else None
+    last_valid = result["last_valid_tick"]
+    if result["last_recorded_tick"] != last_recorded or result["end_tick"] != end_tick:
         raise ValueError("Physical recording and termination coverage differ")
-    if result["end_tick"] != task["end_tick"]:
-        raise ValueError("Termination changed the task endpoint")
     if (
         type(result["ended_tick"]) is not int
-        or not 0 <= result["ended_tick"] <= task["end_tick"]
-        or last_tick is not None
-        and last_tick > result["ended_tick"]
+        or not 0 <= result["ended_tick"] <= end_tick
+        or (last_valid is None) != (last_recorded is None)
+        or last_valid is not None
+        and not last_recorded <= last_valid <= result["ended_tick"]
     ):
         raise ValueError(
             "Termination precedes the physical recording or exceeds the task"
         )
-    for tick, row in enumerate(rows):
-        if (
-            type(row["tick"]) is not int
-            or row["tick"] != tick
-            or not np.isclose(row["time_s"], tick * task["dt_s"], rtol=0, atol=1e-9)
-        ):
-            raise ValueError("Physical recording is not a contiguous task-time prefix")
-        # A target submitted at k first appears in the post-step record k+1.
-        index = (tick - 1) // task["control_ticks"]
-        if tick and index >= len(commands):
-            raise ValueError("Physical record has no corresponding submitted command")
-        expected = data["joint_targets"][index] if tick else initial
-        if not np.array_equal(row["submitted_target"], expected):
-            raise ValueError(f"Recorded submitted target differs at tick {tick}")
-    if rows and (
-        not np.allclose(rows[0]["robot_q"], initial, rtol=0, atol=1e-6)
-        or not np.array_equal(rows[0]["robot_dq"], np.zeros(len(names)))
-    ):
+    if rows and not np.allclose(rows[0]["robot_q"], initial, rtol=0, atol=1e-6):
         raise ValueError("Physical initial robot state differs from the proposal")
     if (directory / "physical.npz").is_file():
         saved = arrays(directory / "physical.npz")
-        for key in ("tick", "time_s", "submitted_target"):
+        for key in ("tick", "robot_q"):
             if not np.array_equal(saved[key], np.asarray([row[key] for row in rows])):
                 raise ValueError(f"NPZ and JSONL disagree: {key}")
 
-    full = last_tick == task["end_tick"] and len(commands) == len(data["ticks"])
+    full = last_valid == end_tick and len(commands) == len(targets)
     if result["complete"] and (not full or result["reason"] != "target_end"):
         raise ValueError("Episode claims completion without full task coverage")
     return {
         "controls_checked": len(commands),
         "physical_frames_checked": len(rows),
-        "last_valid_tick": last_tick,
+        "last_valid_tick": last_valid,
         "control_consistent": True,
         "full_time_coverage": full,
         "complete": result["complete"],
         "reason": result["reason"],
-        "coverage": 0.0 if last_tick is None else last_tick / task["end_tick"],
+        "coverage": 0.0 if last_valid is None else last_valid / end_tick,
     }
 
 
 def check(plan, task_path, run, episode=None):
     """Audit all seeds, or one selected seed, in a finalized sim/sim-dr run."""
-    plan, run = Path(plan), Path(run)
+    run = Path(run)
     task = load_task(task_path)
-    binding, data = load_plan(plan, task)
+    binding, data, initial = load_plan(plan, task)
     metadata = read_json(run / "run.json")
     if (
-        metadata["format"] != "h2r-rollout-v1"
+        metadata["format"] != ROLLOUT_FORMAT
         or metadata["mode"] not in {"sim", "sim-dr"}
         or metadata["status"] != "finished"
     ):
-        raise ValueError("Requires a finalized sim or sim-dr recording")
-    for key in ("task_id", "dt_s", "control_ticks", "end_tick"):
-        if metadata[key] != task[key]:
-            raise ValueError(f"Recording differs from task: {key}")
+        raise ValueError(
+            f"Requires a finalized {ROLLOUT_FORMAT} sim or sim-dr recording"
+        )
+    if metadata["task_id"] != task.task_id:
+        raise ValueError("Recording belongs to another task")
+    # The run owns its clock: the physics step is an evaluation setting and the
+    # control period is the one this client declared at start.
+    dt, ticks, end_tick = (
+        metadata[key] for key in ("dt_s", "control_ticks", "end_tick")
+    )
+    if end_tick != round(task.duration_s / dt) or not math.isclose(
+        end_tick * dt, task.duration_s, rel_tol=0, abs_tol=1e-9
+    ):
+        raise ValueError("Recording does not end at the task duration")
+    if type(ticks) is not int or not math.isclose(
+        ticks * dt, binding["control_dt_s"], rel_tol=0, abs_tol=1e-9
+    ):
+        raise ValueError("Recording control period differs from the plan")
     recorded_binding = metadata["binding"]
     if (
-        recorded_binding["method"] != "spider"
+        recorded_binding["method"] != METHOD
         or recorded_binding["controller"] != binding
     ):
         raise ValueError("Recording is bound to a different SPIDER plan")
@@ -129,7 +139,7 @@ def check(plan, task_path, run, episode=None):
         raise ValueError("Missing evaluator initialization event")
     start, *steps = events
     if (
-        start["task_id"] != task["task_id"]
+        start["task_id"] != task.task_id
         or start["binding"] != recorded_binding
         or set(start["initial_robot"]) != set(ids)
     ):
@@ -140,8 +150,9 @@ def check(plan, task_path, run, episode=None):
             raise ValueError("Unexpected evaluator event")
         for name, command in step["commands"].items():
             commands[name].append(command)
-    names = task["semantics"]["joint_names"]
-    initial = target_vector(read_json(plan / "initial_robot.json"), names)
+    names = task.robot.semantics["joint_names"]
+    initial = target_vector(initial, names)
+    clock = (ticks, end_tick, metadata["record_stride_ticks"])
     reports = {}
     for name in [episode] if episode is not None else ids:
         if not np.array_equal(
@@ -152,14 +163,22 @@ def check(plan, task_path, run, episode=None):
         if result != metadata["episodes"][name]:
             raise ValueError(f"Episode result differs from run manifest: {name}")
         reports[name] = check_episode(
-            run / name, task, data, initial, commands[name], result
+            run / name,
+            clock,
+            names,
+            data["joint_targets"],
+            initial,
+            commands[name],
+            result,
         )
     return {
-        "task_id": task["task_id"],
+        "task_id": task.task_id,
         "plan_id": binding["plan_id"],
         "mode": metadata["mode"],
-        "control_hz": 1 / (task["dt_s"] * task["control_ticks"]),
-        "expected_controls": len(data["ticks"]),
+        "evaluation_dt_s": dt,
+        "control_ticks": ticks,
+        "control_hz": 1 / (dt * ticks),
+        "expected_controls": len(data["joint_targets"]),
         "episodes": reports,
     }
 

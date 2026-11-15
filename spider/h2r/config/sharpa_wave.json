@@ -1,5 +1,5 @@
 {
-  "robots": ["virtual_wrist_sharpa_wave_bimanual", "virtual_wrist_sharpa_wave_right"],
+  "robot": "sharpa_wave",
   "basis": "Sharpa zero-pose fingers point +Z; thumb points -Y left/+Y right. MANO fingers point +X left/-X right, thumb +Z. Tracking origins are wrist body origins.",
   "left": {
     "wrist_body": "left_hand_C_MC",

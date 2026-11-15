@@ -8,71 +8,72 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+from test_h2r_integration import memory_task
 
-from spider.h2r.bundle import PREPARED_FILES, digest, identity, read_json, write_json
-from spider.h2r.replay import Replay, load_plan
+from spider.h2r.artifacts import PLAN_FORMAT, PREPARED_FILES, PREPARED_FORMAT
+from spider.h2r.h2r_io import client
+from spider.h2r.h2r_io.files import content_hash, read_json, sha256, write_json
+from spider.h2r.replay import Replay, control_count, load_plan
 from spider.h2r.settings import PIPELINE
+
+NAMES = ["x", "finger"]
+IDENTITIES = {"task_id": "task", "demo_id": "demo", "robot_id": "robot"}
+PREPARATION = {
+    **IDENTITIES,
+    "format": PREPARED_FORMAT,
+    "pipeline": PIPELINE,
+    "files": dict.fromkeys(PREPARED_FILES, "test-digest"),
+}
+
+
+def write_plan(root, task, targets, control_dt_s=0.01):
+    """Write a sealed synthetic plan without GPU dependencies."""
+    np.savez(
+        root / "trajectory_mjwp.npz",
+        time_s=np.arange(len(targets)) * control_dt_s,
+        joint_targets=targets,
+    )
+    write_json(root / "initial_robot.json", {"x": 0.01, "finger": 0.02})
+    (root / "resolved_config.yaml").write_text("{}\n")
+    semantics = task.robot.semantics
+    binding = {
+        **IDENTITIES,
+        "format": PLAN_FORMAT,
+        "deployment": "offline-control-replay",
+        "preparation": PREPARATION,
+        "joint_names": semantics["joint_names"],
+        "joint_units": semantics["joint_units"],
+        "control_dt_s": control_dt_s,
+        "controls": len(targets),
+        "files": {p.name: sha256(p) for p in root.iterdir() if p.name != "plan.json"},
+    }
+    binding["plan_id"] = content_hash(binding)
+    write_json(root / "plan.json", binding)
+    return binding
 
 
 class ReplayTests(unittest.TestCase):
     """Protect a shared offline plan and each episode's independent cursor."""
 
     def setUp(self):
-        """Include a task whose final interval is shorter than a control period."""
-        self.task = {
-            "task_id": "task",
-            "bundle_id": "bundle",
-            "scene_id": "scene",
-            "robot_manifest_sha256": "robot",
-            "dt_s": 1 / 240,
-            "control_ticks": 8,
-            "end_tick": 19,
-            "semantics": {
-                "joint_names": ["wrist", "finger"],
-                "joint_units": ["m", "rad"],
-            },
-        }
-        self.targets = np.array([[0.1, 0.2], [0.2, 0.3], [0.3, 0.4]])
+        """A 2/30 s task: seven .01 s controls, the last one shorter."""
+        self.task = memory_task()
+        self.targets = np.arange(14.0).reshape(7, 2) / 10
 
-    def artifact(self, root, *, ticks=None, targets=None):
-        """Write a sealed synthetic control artifact without GPU dependencies."""
-        ticks = np.array([0, 8, 16]) if ticks is None else ticks
-        np.savez(
-            root / "trajectory_mjwp.npz",
-            ticks=ticks,
-            time_s=ticks * self.task["dt_s"],
-            joint_targets=self.targets if targets is None else targets,
-        )
-        write_json(root / "initial_robot.json", {"wrist": 0, "finger": 0})
-        (root / "resolved_config.yaml").write_text("{}\n")
-        binding = {
-            **{k: v for k, v in self.task.items() if k != "semantics"},
-            "format": "spider-h2r-plan-v4",
-            "preparation": {
-                **{
-                    k: self.task[k]
-                    for k in (
-                        "task_id",
-                        "bundle_id",
-                        "scene_id",
-                        "robot_manifest_sha256",
-                    )
-                },
-                "format": "spider-h2r-v4",
-                "model_source": "task",
-                "files": dict.fromkeys(PREPARED_FILES, "test-digest"),
-            },
-            "controls": len(ticks),
-            **self.task["semantics"],
-            "files": {
-                p.name: digest(p) for p in root.iterdir() if p.name != "plan.json"
-            },
-        }
-        binding["plan_id"] = identity(binding)
-        write_json(root / "plan.json", binding)
+    def test_control_count_covers_task_despite_float_rounding(self):
+        """A whole number of periods is not rounded up to one more control."""
+        self.assertGreater(0.07 / 0.01, 7)  # 7.000000000000001
+        self.assertEqual(control_count(0.07, 0.01), 7)
+        self.assertEqual(control_count(29.6, 0.01), 2960)
+        self.assertEqual(control_count(2 / 30, 0.01), 7)
+        self.assertEqual(control_count(0.06, 0.01), 6)
+        self.assertEqual(control_count(1.0, 1 / 30), 30)
+        for invalid in (0, -0.01, float("nan"), float("inf"), "0.01", None):
+            with self.assertRaises(ValueError):
+                control_count(1.0, invalid)
 
-    def test_native_plan_export_covers_common_grid(self):
-        """Run the real exporter and replay reader across nonmatching grids."""
+    def test_native_plan_export_on_its_own_clock(self):
+        """Run the real exporter and plan reader; a failed plan is never sealed."""
         from spider.h2r.plan import plan
 
         class FakeController:
@@ -81,8 +82,7 @@ class ReplayTests(unittest.TestCase):
                     sim_dt=0.01, ctrl_dt=0.4, physics_substeps=1
                 )
                 self.layout = SimpleNamespace(
-                    names=["wrist", "finger"],
-                    targets=lambda v: dict(zip(["wrist", "finger"], v, strict=True)),
+                    names=NAMES, targets=lambda v: dict(zip(NAMES, v, strict=True))
                 )
                 self.segments = [
                     {
@@ -95,110 +95,113 @@ class ReplayTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            prepared, task_path, output = (
-                root / "prepared",
-                root / "task",
-                root / "plan",
-            )
+            prepared, output = root / "prepared", root / "plan"
             prepared.mkdir()
-            self.artifact(prepared)
-            binding = read_json(prepared / "plan.json")["preparation"]
-            binding["pipeline"] = PIPELINE
-            write_json(prepared / "h2r_binding.json", binding)
+            write_json(prepared / "h2r_binding.json", PREPARATION)
+            write_json(prepared / "initial_robot.json", {"x": 0.0, "finger": 0.0})
+            (prepared / "resolved_config.yaml").write_text("{}\n")
             with (
                 patch("spider.h2r.plan.load_task", return_value=self.task),
-                patch("spider.h2r.plan.load_prepared", return_value=binding),
+                patch("spider.h2r.plan.load_prepared", return_value=PREPARATION),
                 patch("spider.h2r.controller.Controller", FakeController),
                 patch("spider.h2r.plan.run_fast", side_effect=[True, False]),
             ):
-                plan(prepared, task_path, output, "cpu", 0)
+                plan(prepared, root / "task", output, "cpu", 0)
                 failed = root / "failed"
                 with self.assertRaisesRegex(RuntimeError, "denominator"):
-                    plan(prepared, task_path, failed, "cpu", 0)
+                    plan(prepared, root / "task", failed, "cpu", 0)
                 self.assertFalse((failed / "plan.json").exists())
                 self.assertTrue((failed / "trajectory_failed.npz").exists())
                 self.assertEqual(
-                    read_json(failed / "failure.json")["task_end_tick"], 19
+                    read_json(failed / "failure.json")["required_native_steps"], 7
                 )
-            manifest, data = load_plan(output, self.task)
+            manifest, data, initial = load_plan(output, self.task)
+            self.assertEqual(manifest["format"], "spider-h2r-plan-v5")
             self.assertEqual(manifest["preparation"]["pipeline"], PIPELINE)
-            self.assertEqual(manifest["native_controls"], 8)
-            self.assertEqual(manifest["controls"], 3)
-            np.testing.assert_array_equal(
-                data["joint_targets"], [[0, 0], [3, -3], [6, -6]]
+            self.assertEqual(
+                (manifest["control_dt_s"], manifest["controls"]), (0.01, 7)
             )
-            np.testing.assert_allclose(data["source_time_s"], [0, 0.03, 0.06])
+            for removed in ("ticks", "control_ticks", "dt_s", "end_tick"):
+                self.assertNotIn(removed, manifest)
+            self.assertNotIn("ticks", data)
+            np.testing.assert_array_equal(data["time_s"], np.arange(7) * 0.01)
+            np.testing.assert_array_equal(
+                data["joint_targets"], np.column_stack((np.arange(7), -np.arange(7)))
+            )
+            self.assertEqual(initial, {"x": 0.0, "finger": 0.0})
 
-    def test_twenty_evaluations_share_identical_controls(self):
-        """Ignore perturbed observations in both modes and all ten seeds."""
+    def test_evaluations_share_identical_controls_at_any_physics_step(self):
+        """Ignore observations; derive ticks from the evaluation's own step."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.artifact(root)
-            binding, data = load_plan(root, self.task)
-            self.assertNotIn("pipeline", binding["preparation"])
-            for mode in ("sim", "sim-dr"):
-                for seed in range(10):
-                    replay = Replay(self.task, binding, data)
-                    for i, tick in enumerate((0, 8, 16)):
+            write_plan(root, self.task, self.targets)
+            binding, data, _ = load_plan(root, self.task)
+            for hz, ticks in ((300, 3), (600, 6), (100, 1)):
+                hello = {"dt_s": 1 / hz}
+                self.assertEqual(client.control_ticks(hello, 0.01), ticks)
+                for seed in range(3):
+                    replay = Replay(binding, data, ticks)
+                    for i in range(7):
                         targets, diagnostic = replay.control(
-                            {
-                                "tick": tick,
-                                "time_s": tick / 240,
-                                "robot_q": [seed * 100, -seed],
-                                "bodies": {"mode": mode},
-                            },
-                            ["finger", "wrist"],
+                            {"tick": i * ticks, "robot_q": [seed * 100, -seed]},
+                            ["finger", "x"],
                         )
                         self.assertEqual(
-                            targets,
-                            dict(
-                                zip(["wrist", "finger"], self.targets[i], strict=True)
-                            ),
+                            targets, dict(zip(NAMES, self.targets[i], strict=True))
                         )
                         self.assertEqual(diagnostic["plan_id"], binding["plan_id"])
-                    with self.assertRaisesRegex(ValueError, "clock"):
-                        replay.control(
-                            {"tick": 16, "time_s": 16 / 240}, ["wrist", "finger"]
-                        )
+                    for tick in (6 * ticks, 7 * ticks):  # Repeated; beyond the plan.
+                        with self.assertRaisesRegex(ValueError, "clock"):
+                            replay.control({"tick": tick}, NAMES)
+            with self.assertRaisesRegex(ValueError, "whole number"):
+                client.control_ticks({"dt_s": 1 / 240}, 0.01)
 
-    def test_resealed_plan_cannot_restore_legacy_model_source(self):
-        """Require task-only provenance even after an attacker updates plan_id."""
+    def test_older_plan_formats_rejected_with_clear_message(self):
+        """A resealed older plan or preparation cannot be replayed."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.artifact(root)
-            original = read_json(root / "plan.json")
-            for legacy in ("spider-h2r-plan-v1", "spider-h2r-plan-v2", None):
+            original = write_plan(root, self.task, self.targets)
+            for legacy in ("spider-h2r-plan-v4", "spider-h2r-plan-v1", None):
                 changed = copy.deepcopy(original)
                 if legacy:
                     changed["format"] = legacy
                 else:
-                    changed["preparation"]["planning_scene"] = "custom.xml"
-                changed["plan_id"] = identity(
+                    changed["preparation"]["format"] = "spider-h2r-v4"
+                changed["plan_id"] = content_hash(
                     {k: v for k, v in changed.items() if k != "plan_id"}
                 )
                 write_json(root / "plan.json", changed)
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, "regenerate it from --task"):
                     load_plan(root, self.task)
 
     def test_incomplete_nonfinite_or_changed_plan_rejected(self):
         """Reject truncation, non-finite controls, mismatched tasks and tampering."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.artifact(root, ticks=np.array([0, 8]), targets=self.targets[:2])
+            write_plan(root, self.task, self.targets[:6])
             with self.assertRaisesRegex(ValueError, "complete task"):
                 load_plan(root, self.task)
             invalid = self.targets.copy()
             invalid[1, 0] = np.nan
-            self.artifact(root, targets=invalid)
+            write_plan(root, self.task, invalid)
             with self.assertRaisesRegex(ValueError, "finite targets"):
                 load_plan(root, self.task)
-            self.artifact(root)
-            changed = copy.deepcopy(self.task)
-            changed["task_id"] = "different"
-            with self.assertRaisesRegex(ValueError, "task_id"):
-                load_plan(root, changed)
+            original = write_plan(root, self.task, self.targets)
+            longer = memory_task(frames=4)
+            with self.assertRaisesRegex(ValueError, "complete task"):
+                load_plan(root, longer)
+            for key in IDENTITIES:
+                other = copy.deepcopy(original)
+                other[key] = "different"
+                other["plan_id"] = content_hash(
+                    {k: v for k, v in other.items() if k != "plan_id"}
+                )
+                write_json(root / "plan.json", other)
+                with self.assertRaisesRegex(ValueError, f"another task: {key}"):
+                    load_plan(root, self.task)
+            write_plan(root, self.task, self.targets)
             (root / "initial_robot.json").write_text("{}")
-            with self.assertRaisesRegex(ValueError, "Changed artifact"):
+            with self.assertRaisesRegex(ValueError, "changed file"):
                 load_plan(root, self.task)
 
 

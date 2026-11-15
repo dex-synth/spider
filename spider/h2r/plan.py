@@ -9,9 +9,11 @@ from pathlib import Path
 
 import numpy as np
 
-from .bundle import digest, identity, load_prepared, load_task, write_json
+from .artifacts import PLAN_FORMAT, load_prepared, task_identity
 from .fast_loop import run_fast
-from .reference import hold_indices
+from .h2r_io import load_task
+from .h2r_io.files import content_hash, sha256, write_json
+from .replay import control_count
 
 
 def plan(prepared, task_path, output, device, seed):
@@ -20,16 +22,17 @@ def plan(prepared, task_path, output, device, seed):
 
     if type(seed) is not int or seed < 0:
         raise ValueError("Planning seed must be a nonnegative integer")
-    prepared, task_path, output = map(Path.resolve, (prepared, task_path, output))
-    if output.is_relative_to(prepared) or output.is_relative_to(task_path):
-        raise ValueError("Plan output must be outside its inputs")
+    prepared, output = Path(prepared).resolve(), Path(output).resolve()
     task = load_task(task_path)
+    if output.is_relative_to(prepared) or output.is_relative_to(task.path):
+        raise ValueError("Plan output must be outside its inputs")
     binding = load_prepared(prepared, task)
     output.mkdir(parents=True, exist_ok=False)
     started = time.perf_counter()
-    controller = Controller(prepared, task_path, device, seed)
-    native_dt = controller.config.sim_dt
-    count = int(np.ceil(task["end_tick"] * task["dt_s"] / native_dt))
+    controller = Controller(prepared, task, device, seed)
+    # The plan is published on SPIDER's native action clock, not on evaluation ticks.
+    control_dt = float(controller.config.sim_dt)
+    count = control_count(task.duration_s, control_dt)
     with (output / "planning.jsonl").open("w") as log:
 
         def report(diagnostic):
@@ -72,8 +75,8 @@ def plan(prepared, task_path, output, device, seed):
                 "reason": "upstream-fast-unrecoverable",
                 "planned_steps": steps.tolist(),
                 "required_native_steps": count,
-                "task_id": task["task_id"],
-                "task_end_tick": task["end_tick"],
+                "task_id": task.task_id,
+                "task_duration_s": task.duration_s,
             },
         )
         raise RuntimeError(
@@ -83,31 +86,23 @@ def plan(prepared, task_path, output, device, seed):
     targets = np.asarray(
         [list(controller.layout.targets(value).values()) for value in ctrl]
     )
-    native_times = np.arange(count) * native_dt
-    ticks = np.arange(0, task["end_tick"], task["control_ticks"], dtype=np.int64)
-    times = ticks * task["dt_s"]
-    indices = hold_indices(native_times, times)
+    times = np.arange(count) * control_dt
     np.savez_compressed(
         output / "trajectory_mjwp.npz",
-        ticks=ticks,
         time_s=times,
-        joint_targets=targets[indices],
-        qpos=qpos[indices],
-        qvel=qvel[indices],
-        ctrl=ctrl[indices],
-        native_time_s=native_times,
-        native_joint_targets=targets,
-        native_qpos=qpos,
-        native_state_time_s=native_times + native_dt,
-        native_qvel=qvel,
-        native_ctrl=ctrl,
-        source_time_s=native_times[indices],
+        joint_targets=targets,
+        ctrl=ctrl,
+        # Private planning states after each control: diagnostics, never replayed.
+        state_time_s=times + control_dt,
+        qpos=qpos,
+        qvel=qvel,
     )
     for name in ("initial_robot.json", "resolved_config.yaml"):
         shutil.copy2(prepared / name, output / name)
     repo = Path(__file__).resolve().parents[2]
     manifest = {
-        "format": "spider-h2r-plan-v4",
+        "format": PLAN_FORMAT,
+        **task_identity(task),
         "deployment": "offline-control-replay",
         "planning_backend": "mjwarp",
         "planning_seed": seed,
@@ -119,31 +114,21 @@ def plan(prepared, task_path, output, device, seed):
                 ["git", "status", "--porcelain"], cwd=repo, text=True
             )
         ),
-        "preparation_binding_sha256": digest(prepared / "h2r_binding.json"),
+        "preparation_binding_sha256": sha256(prepared / "h2r_binding.json"),
         "preparation": binding,
         "joint_names": controller.layout.names,
-        "joint_units": task["semantics"]["joint_units"],
-        "control_ticks": task["control_ticks"],
-        "end_tick": task["end_tick"],
-        "dt_s": task["dt_s"],
-        "controls": len(ticks),
-        "native_controls": count,
-        "clock_mapping": {
-            "native_action_dt_s": native_dt,
+        "joint_units": task.robot.semantics["joint_units"],
+        "control_dt_s": control_dt,
+        "controls": count,
+        "clock": {
             "replan_dt_s": controller.config.ctrl_dt,
-            "private_physics_dt_s": native_dt / controller.config.physics_substeps,
-            "publication_dt_s": task["dt_s"] * task["control_ticks"],
-            "mapping": "zero-order-hold-at-common-ticks",
-            "planning_state_times": "source_time_s + native_action_dt_s (post-step diagnostic)",
+            "private_physics_dt_s": control_dt / controller.config.physics_substeps,
+            "planning_state_times": "time_s + control_dt_s (post-step diagnostic)",
         },
         "plan_elapsed_s": time.perf_counter() - started,
-        **{
-            k: task[k]
-            for k in ("task_id", "bundle_id", "scene_id", "robot_manifest_sha256")
-        },
-        "files": {p.name: digest(p) for p in sorted(output.iterdir()) if p.is_file()},
+        "files": {p.name: sha256(p) for p in sorted(output.iterdir()) if p.is_file()},
     }
-    manifest["plan_id"] = identity(manifest)
+    manifest["plan_id"] = content_hash(manifest)
     write_json(output / "plan.json", manifest)
     return output
 

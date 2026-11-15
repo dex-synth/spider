@@ -14,7 +14,7 @@ class Tracking:
         self.weights = torch.ones(layout.model.nv, device=config.device)
         self.scalar_q = [*layout.robot_q.tolist(), *layout.object_q.tolist()]
         self.scalar_v = [*layout.robot_v.tolist(), *layout.object_v.tolist()]
-        groups = layout.task["semantics"]["joint_groups"]
+        groups = layout.task.robot.semantics["joint_groups"]
         scales = [0.0] * layout.model.nu
         for group, noise, weight in (
             ("wrist_translation", config.pos_noise_scale, config.base_pos_rew_scale),
@@ -81,7 +81,7 @@ class Tracking:
                 dim=1,
             )
             # Preserve upstream's absent-object sentinel for bimanual inputs.
-            if len(self.layout.task["semantics"]["hands"]) == 2 and torch.all(
+            if len(self.layout.task.hand_sides) == 2 and torch.all(
                 ref_qpos[:, q : q + 3].abs() < 1e-4
             ):
                 pos, rot = pos * 0, rot * 0
@@ -107,7 +107,7 @@ class Tracking:
                 ),
                 dim=1,
             )
-            if len(self.layout.task["semantics"]["hands"]) == 2 and torch.all(
+            if len(self.layout.task.hand_sides) == 2 and torch.all(
                 ref[0][q : q + 3].abs() < 1e-4
             ):
                 pos, rot = pos * 0, rot * 0

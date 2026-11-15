@@ -9,15 +9,21 @@ import mujoco
 import numpy as np
 import yaml
 
-from .bundle import digest, load_inputs, write_json
+from .artifacts import PREPARED_FORMAT, task_identity
+from .h2r_io import load_task
+from .h2r_io.files import sha256, write_json
 from .kinematics import diagnostic_rollout, solve_kinematics
 from .model import Layout
 from .reference import hand_targets
 from .scene import calibration_for, planning_spec
 from .settings import PIPELINE, recipe, settings, validate_clock
 
+# SPIDER's own pre-check of its initial pose proposal. The evaluation applies its
+# own admission threshold, which is an evaluation setting and not known here.
+PRECHECK_MAX_PENETRATION_M = 0.02
 
-def check_initialization(model, layout, qpos, task):
+
+def check_initialization(model, layout, qpos):
     """Check the proposed zero-velocity initial frame without advancing physics."""
     joint_limits = []
     for name, q in zip(layout.names, layout.robot_q, strict=True):
@@ -33,7 +39,7 @@ def check_initialization(model, layout, qpos, task):
     data.qpos[:] = qpos
     data.ctrl[:] = layout.controls(qpos)
     mujoco.mj_forward(model, data)
-    threshold = task["initialization"]["max_penetration_m"]
+    threshold = PRECHECK_MAX_PENETRATION_M
     collisions = [
         {
             "geom1": model.geom(c.geom1).name,
@@ -44,7 +50,7 @@ def check_initialization(model, layout, qpos, task):
         if c.dist < -threshold
     ]
     return {
-        "max_penetration_m": threshold,
+        "precheck_max_penetration_m": threshold,
         "accepted": not collisions and not joint_limits,
         "joint_limit_violations": joint_limits,
         "collisions": collisions,
@@ -54,41 +60,34 @@ def check_initialization(model, layout, qpos, task):
 def prepare(task_path, output, config=None):
     """Build references and seal the deployment only after successful validation."""
     started = time.perf_counter()
-    task_path, output = Path(task_path).resolve(), Path(output).resolve()
-    if output.is_relative_to(task_path):
+    output = Path(output).resolve()
+    task = load_task(task_path)
+    if output.is_relative_to(task.path):
         raise ValueError("Output must be outside the task")
-    task, reference, data = load_inputs(task_path)
-    options = settings(
-        config,
-        dataset=reference.get("dataset"),
-        ref_dt=1
-        / reference.get("reference_hz", 1 / np.median(np.diff(data["time_s"]))),
-    )
-    validate_clock(options["mpc"], task)
+    options = settings(config, dataset=task.dataset, ref_dt=1 / task.demo.reference_hz)
+    validate_clock(options["mpc"])
     calibration = calibration_for(task)
     output.mkdir(parents=True, exist_ok=False)
     (output / "resolved_config.yaml").write_text(
         yaml.safe_dump(options, sort_keys=False)
     )
     write_json(output / "calibration.json", calibration)
-    spec, wrist_sites, finger_sites = planning_spec(task_path, task, calibration)
+    spec, wrist_sites, finger_sites = planning_spec(task, calibration)
     model = spec.compile()
     layout = Layout(model, task)
-    wrists, tips = hand_targets(
-        reference, data, task["semantics"]["hands"], calibration
-    )
-    reference_q = layout.reference_positions(reference, data)
+    wrists, tips = hand_targets(task, calibration)
+    reference_q = layout.reference_positions()
+    times = task.demo.time_s
     qpos, qvel, native = solve_kinematics(
         spec,
         layout,
         reference_q,
-        data["time_s"],
+        times,
         wrists,
         tips,
         (wrist_sites, finger_sites),
         options["ik"],
     )
-    times = data["time_s"]
     np.savez_compressed(
         output / "trajectory_kinematic.npz",
         time_s=times,
@@ -117,7 +116,7 @@ def prepare(task_path, output, config=None):
     # Method-smoothed objects must never redefine the shared initial object pose.
     initial_qpos = reference_q[0].copy()
     initial_qpos[layout.robot_q] = qpos[0, layout.robot_q]
-    check = check_initialization(model, layout, initial_qpos, task)
+    check = check_initialization(model, layout, initial_qpos)
     write_json(output / "initialization.json", check)
     if not check["accepted"]:
         raise ValueError(
@@ -132,25 +131,24 @@ def prepare(task_path, output, config=None):
         subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True)
     )
     binding = {
-        "format": "spider-h2r-v4",
-        "pipeline": {**PIPELINE, "dataset_override": recipe(reference.get("dataset"))},
+        "format": PREPARED_FORMAT,
+        **task_identity(task),
+        "dataset": task.dataset,
+        "profile": task.profile,
+        "hand_sides": list(task.hand_sides),
+        "pipeline": {**PIPELINE, "dataset_override": recipe(task.dataset)},
         "reference_mapping": "dataset-rate; sign-aligned-normalized-quaternion-mean; source-time-mapped-linear-and-nlerp; endpoint-value-hold",
         "method_revision": revision,
         "method_worktree_dirty": dirty,
         "planning_backend": "mjwarp",
-        "model_source": "task",
         "contact_guidance": False,
         "contact_rew_scale": 0,
         "object_reward": "all dynamic roots and passive hinges",
         "time_s": [float(times[0]), float(times[-1])],
         "frames": len(times),
         "prepare_elapsed_s": time.perf_counter() - started,
-        **{
-            k: task[k]
-            for k in ("task_id", "bundle_id", "scene_id", "robot_manifest_sha256")
-        },
         "files": {
-            str(p.relative_to(output)): digest(p)
+            str(p.relative_to(output)): sha256(p)
             for p in sorted(output.rglob("*"))
             if p.is_file()
         },
@@ -160,7 +158,7 @@ def prepare(task_path, output, config=None):
 
 
 def main():
-    """Prepare from explicit artifact paths, without loading a raw dataset."""
+    """Prepare from one benchmark task directory, without loading a raw dataset."""
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ("task", "output"):
         parser.add_argument(f"--{key}", type=Path, required=True)

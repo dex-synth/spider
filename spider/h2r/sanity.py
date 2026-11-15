@@ -46,5 +46,9 @@ def check_stability(model, layout, initial_qpos, ctrl, config):
         pos_error > config.sanity_check_pos_thresh
         or rot_error > config.sanity_check_rot_thresh
     ):
-        raise RuntimeError(f"Upstream initial-state sanity check failed: {result}")
+        raise RuntimeError(
+            "Upstream initial-state sanity check failed: the object does not stay "
+            "in place while the first control is held (native SPIDER requirement, "
+            f"e.g. a task that starts with the object held in mid-air): {result}"
+        )
     return result
