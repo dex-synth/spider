@@ -18,25 +18,29 @@ Python 3.12，独立环境：
 uv sync --extra h2r
 python -m spider.h2r.prepare --task "$TASK" --output "$PREPARED"
 python -m spider.h2r.plan --task "$TASK" --prepared "$PREPARED" --output "$PLAN" --seed 0 --device cuda:0
-python -m spider.h2r.evaluation --task "$TASK" --plan "$PLAN" --socket "$SOCKET" --output "$CONTROL_LOG" --device cpu
+python -m spider.h2r.evaluation --task "$TASK" --plan "$PLAN" --socket "$SOCKET" --output "$CONTROL_LOG"
+python -m spider.h2r.check --task "$TASK" --plan "$PLAN" --run "$ROLLOUT" --output "$REPLAY_CHECK"
 ```
 
-`TASK` 必须是 bench 分发的完整、自包含任务。prepare 和 plan 均从该任务构建内存中的模型，
+`TASK` 是 bench 分发的 task 目录（`h2r-task-v1`，独立打包或位于 suite 内），也是唯一的输入；
+由 `spider/h2r/h2r_io/`（bench 加载器的副本）读取并校验。prepare 和 plan 均从该任务构建内存中的模型，
 IK 与 MPC 模型只增加无质量 tracking sites；不增加 IK 碰撞避免或速度约束。
 prepared 不携带 XML、mesh 或可覆盖场景的路径。
 每个序列规划一次，sim 与 sim-dr 的评估 seeds 复用同一 plan。
-当前标定为 Sharpa 双手和右手虚拟腕，其他机器人明确拒绝。
-采用固定上游 fast 入口与各数据集的 fast 配方；HOT3D 没有官方 override，使用基础默认值。
-默认私有规划 100 Hz，重规划间隔按数据集配方；共同控制发布采用零阶保持采样。
+手部标定按机器人名称选择（当前为 `sharpa_wave`），只处理 task 的参与手；其他机器人明确拒绝。
+采用固定上游 fast 入口：ARCTIC、OakInk2 使用各自的 fast 配方，HOT3D、TACO 没有官方 override，使用基础默认值；其他数据集报错。
+私有规划与发布的动作周期均为 0.01 s，重规划间隔按数据集配方；客户端在 start 中声明该周期，
+评估物理步长只从 `hello.dt_s` 读取。
 最佳样本快照、重试与回退仅作用于私有规划，不改变评估世界。
 
 完整环境、评估命令、输入校验与支持限制见 [H2R 使用说明](docs/h2r.md)。
-准备与计划格式为 `spider-h2r-v4`、`spider-h2r-plan-v4`；旧格式需要从原 bench task 重新准备与规划。
+准备与计划格式为 `spider-h2r-v5`、`spider-h2r-plan-v5`；更早的格式需要从 bench task 重新准备与规划。
 
 ## 开发
 
-- `spider/h2r/`：任务边界、标定、参考、具名控制与评估客户端。
-- `spider/h2r/check.py`：CPU 检查 v4 plan 与统一评估的实际提交控制、初态和时间覆盖，保留提前失败状态。
+- `spider/h2r/`：标定、参考、具名控制、方法产物与评估客户端。
+- `spider/h2r/h2r_io/`：bench 任务加载器与评估协议的副本，由 `h2r-bench export-loader` 生成，不在此修改。
+- `spider/h2r/check.py`：CPU 检查 plan 与统一评估的实际提交控制、初态和时间覆盖，保留提前失败状态。
 - `spider/preprocess/ik_fast.py`：Mink 分阶段求解及原生后处理。
 - `spider/h2r/kinematics.py`：共同目标与 fast IK 的具名／时间映射。
 - `spider/optimizers/sampling_fast.py`：原生最佳样本优化器；复用 `sampling.py`。
