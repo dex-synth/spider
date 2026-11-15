@@ -175,6 +175,8 @@ class TaskTests(unittest.TestCase):
             )
             for mutation in (
                 {"pipeline": {**PIPELINE, "rotation_processing": "unknown"}},
+                {"pipeline": None},
+                {"files": {}},
                 {
                     "files": {
                         **binding["files"],

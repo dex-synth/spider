@@ -54,7 +54,7 @@ def validate_prepared(binding, task):
         raise ValueError(
             "Prepared files must contain only method references and configuration"
         )
-    processing = binding.get("pipeline", {}).get("rotation_processing")
+    processing = (binding.get("pipeline") or {}).get("rotation_processing")
     if processing != PIPELINE["rotation_processing"]:
         raise ValueError(
             "Regenerate SPIDER preparation from --task "
