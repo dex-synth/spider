@@ -1,0 +1,15 @@
+{
+  "package": "h2r_io",
+  "version": "1",
+  "bench_commit": "550aa13cedf14cf65f7999f78ae7e04002c221cc",
+  "files": {
+    "__init__.py": "3bdc681b70d6c47cb9e862113cf1fb96e1e31464ea5330f152de4aea938538e2",
+    "client.py": "7097160b7df1aa7b08c59fe22c8d50093c6025b31789a4e9b03a98764047ff05",
+    "demo.py": "dce36a399379093111aacb1b801fb4ab56af4fc48507bdaa48c7aa8c94e82f9f",
+    "files.py": "c00212914cfdb6cdc4e2f3fb8804de58da15b5613abfe45f81a5fe8499980768",
+    "mano.py": "aec6e26acc34d12ca2d911295c9c1ff9670bf511e3ab781068a2053cab32a0d6",
+    "robot.py": "a1aa6ce62d6e17f1a129101f73f711c998c52d1074b7318d899021b819d16b56",
+    "suite.py": "44498f1f84b9233c8f85f75e27e43acb6fa613dc79093ed50cb499150720c4b4",
+    "task.py": "0f614a6c0a9d6ffca6e4ce5e9217e6fac9cb0afd194ef415ddede22a5320efec"
+  }
+}

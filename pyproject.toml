@@ -82,6 +82,9 @@ indent-width = 4
 # Assume Python 3.12+
 target-version = "py312"
 
+# Vendored h2r-bench loader (h2r-bench export-loader); never edited here.
+extend-exclude = ["spider/h2r/h2r_io"]
+
 [tool.ruff.lint]
 # Enable pycodestyle (`E`) and Pyflakes (`F`) codes by default.
 # Plus Google style conventions
