@@ -18,8 +18,10 @@ from .reference import hand_targets
 from .scene import calibration_for, planning_spec
 from .settings import PIPELINE, recipe, settings, validate_clock
 
-# SPIDER's own pre-check of its initial pose proposal. The evaluation applies its
-# own admission threshold, which is an evaluation setting and not known here.
+# SPIDER's own check of its IK initial pose, equal to the default evaluation admission.
+# A pose that fails it is still proposed: the native IK has no collision avoidance, and
+# its penetration is a failure of the method that the evaluation records as such. The
+# check only lets planning skip the MPC for a start the evaluation would reject.
 PRECHECK_MAX_PENETRATION_M = 0.02
 
 
@@ -119,8 +121,10 @@ def prepare(task_path, output, config=None):
     check = check_initialization(model, layout, initial_qpos)
     write_json(output / "initialization.json", check)
     if not check["accepted"]:
-        raise ValueError(
-            f"IK initialization rejected; see {output / 'initialization.json'}"
+        print(
+            "IK initial pose fails SPIDER's pre-check; it is proposed as is and "
+            f"planning will be skipped (see {output / 'initialization.json'})",
+            flush=True,
         )
     write_json(output / "initial_robot.json", layout.targets(layout.controls(qpos[0])))
     repo = Path(__file__).resolve().parents[2]

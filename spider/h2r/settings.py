@@ -92,14 +92,17 @@ def recipe(dataset):
 
 
 def settings(path=None, *, dataset=None, ref_dt=None):
-    """Resolve pinned YAMLs, then explicit overrides; retain dataset reference rate.
+    """Resolve pinned YAMLs, the H2R adaptation, then explicit overrides.
 
-    `dataset=None` applies no dataset recipe: it re-reads a resolved configuration.
+    Order: dataclass defaults, upstream default.yaml, the dataset's fast override,
+    h2r.yaml, the reference rate, then `path`. `dataset=None` applies no dataset
+    recipe: it re-reads a resolved configuration.
     """
     raw = yaml.safe_load(Path(path).read_text()) if path else {}
     if not isinstance(raw, dict) or set(raw) - {"ik", "mpc"}:
         raise ValueError("Settings must contain only ik and mpc mappings")
     native = yaml.safe_load((CONFIG_DIR / "default.yaml").read_text())
+    adaptation = yaml.safe_load((CONFIG_DIR / "h2r.yaml").read_text())
     if dataset is not None and recipe(dataset):
         native.update(yaml.safe_load((CONFIG_DIR / recipe(dataset)).read_text()))
     result = {}
@@ -108,6 +111,9 @@ def settings(path=None, *, dataset=None, ref_dt=None):
         values = defaults.copy()
         if name == "mpc":
             values.update({k: v for k, v in native.items() if k in defaults})
+        if set(adaptation.get(name, {})) - defaults.keys():
+            raise ValueError(f"Unknown {name} options in h2r.yaml")
+        values.update(adaptation.get(name, {}))
         if ref_dt is not None:
             values["ref_dt"] = ref_dt
         overrides = raw.get(name, {})
@@ -166,7 +172,8 @@ PIPELINE = {
     "upstream_revision": UPSTREAM_REVISION,
     "ik_entry": "spider/preprocess/ik_fast.py",
     "mpc_entry": "examples/run_mjwp_fast.py",
-    "config_source": "examples/config/default.yaml + dataset fast override + Config",
+    "config_source": "Config defaults + examples/config/default.yaml"
+    " + dataset fast override + spider/h2r/config/h2r.yaml + --config",
     "recipe": "fast-mink-best-sample-h2r",
     "rotation_processing": "sign-continuous-mean-nlerp-v1",
     "num_dr_1": "nominal; upstream single-world nonzero offsets intentionally disabled",

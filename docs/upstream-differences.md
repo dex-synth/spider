@@ -32,7 +32,7 @@ H2R 保留其 fast IK、sampling MPC、最佳样本选择及重试／回退语�
 ## 保留的算法与默认参数
 
 `spider/h2r/config/default.yaml` 和两份 `override/*_fast.yaml`（ARCTIC、OakInk2）与上述 original **逐字节一致**。上游另有 GigaHand、OakInk 的 fast override；bench 不分发这两个数据集，其副本已移除。
-解析顺序为基础默认值、对应数据集 fast override、任务参考采样周期、显式 `--config`；只提取算法字段，实际值写入 `resolved_config.yaml`。
+解析顺序为基础默认值、对应数据集 fast override、H2R 适配层 `spider/h2r/config/h2r.yaml`、任务参考采样周期、显式 `--config`；只提取算法字段，实际值写入 `resolved_config.yaml`。适配层目前只有一项：关闭 sanity check（见下）。
 配方按 `task.dataset` 在 `settings.DATASET_RECIPES` 中选择：上游没有 HOT3D、TACO 的 fast override，二者使用基础配方；未列出的数据集报错，不借用其他配方。以下均为未传自定义配置时的值。
 
 ### IK
@@ -70,7 +70,7 @@ H2R 保留其 fast IK、sampling MPC、最佳样本选择及重试／回退语�
 | `base_pos_rew_scale / base_rot_rew_scale` | `1 / 0.3` | `0.1 / 0.03` |
 
 各配方共同保留：`joint_rew_scale=0.003`、物体 `pos_rew_scale=1`／`rot_rew_scale=0.3`、`vel_rew_scale=0.0001`、`terminal_rew_scale=1`、`exploit_ratio=exploit_noise_scale=0.01`、物体位置门槛 `0.1 m`。
-sanity check 在私有 CPU 模型以 `0.002 s` 积分、保持首个控制，检查全过程最大 root 漂移，门槛 `0.01 m / 0.3 rad`；ARCTIC 按原生 override 关闭。评估没有 warm-up，部分任务首帧物体悬空；保持首个控制握不住物体的任务在此明确失败，不在默认配方中关闭该检查。
+sanity check 在私有 CPU 模型以 `0.002 s` 积分、保持首个控制，检查全过程最大 root 漂移，门槛 `0.01 m / 0.3 rad`；上游基础默认值与 OakInk2 配方保持 3 s，ARCTIC override 关闭。H2R 默认对所有数据集关闭（`h2r.yaml` 的 `mpc.sanity_check_seconds: 0.0`，项目决定，2026-11-15）：评估没有 warm-up，部分任务首帧物体由手握持，保持首个控制时物体不会静止。代码仍保留该检查，`--config` 设 3.0 即恢复上游行为。
 
 fast 每个 attempt 跑满配置轮数，最多 4 个 attempt，不使用 improvement 提前停止。runner 保留最多 3 次 local retry、恢复上限 `max_revert_depth=3`；每级 boost 将 iterations 乘 2、noise 乘 `sqrt(2)`，恢复时回到同一锚点。普通成功不清除 boost，越过恢复锚点后才重置。
 失败保留截断／最后候选诊断，但不发布不完整 plan。`contact_guidance`、`gibbs_sampling`、`terminate_resample` 默认均为 `false`；前两项开启时明确拒绝，符合所选上游 fast 的限制。

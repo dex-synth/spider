@@ -88,15 +88,15 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(base["mpc"]["ctrl_dt"], 0.4)
             self.assertEqual(base["mpc"]["nconmax_per_env"], 120)
             self.assertEqual(base["mpc"]["njmax_per_env"], 350)
-            self.assertEqual(base["mpc"]["sanity_check_seconds"], 3)
+            self.assertEqual(base["mpc"]["sanity_check_seconds"], 0)  # h2r.yaml
             self.assertEqual(base["ik"]["ref_dt"], 1 / 30)
             self.assertEqual(base, settings(ref_dt=1 / 30))
             validate_clock(base["mpc"])
-        for dataset, rotation, sanity in [("arctic", 2.5, 0), ("oakink2", 1.0, 3)]:
+        for dataset, rotation in [("arctic", 2.5), ("oakink2", 1.0)]:
             cfg = settings(dataset=dataset)["mpc"]
             self.assertEqual(cfg["max_num_iterations"], 4)
             self.assertEqual(cfg["object_rot_threshold"], rotation)
-            self.assertEqual(cfg["sanity_check_seconds"], sanity)
+            self.assertEqual(cfg["sanity_check_seconds"], 0)
             self.assertEqual(cfg["ctrl_dt"], 1.5)
             self.assertEqual(cfg["temperature"], 1.0)
             self.assertEqual(cfg["improvement_threshold"], -1.0)
@@ -109,6 +109,11 @@ class PipelineTests(unittest.TestCase):
             path.write_text("mpc:\n  num_dr: 2\n")
             with self.assertRaisesRegex(ValueError, "nominal"):
                 settings(path)
+            # The upstream sanity check is off by default; --config restores it.
+            path.write_text("mpc:\n  sanity_check_seconds: 3.0\n")
+            self.assertEqual(
+                settings(path, dataset="oakink2")["mpc"]["sanity_check_seconds"], 3
+            )
 
     def test_filter_and_reference_values(self):
         """Preserve scalar filtering, interpolation and endpoint velocity."""

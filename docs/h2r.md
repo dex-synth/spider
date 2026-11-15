@@ -45,7 +45,7 @@ python -m spider.h2r.prepare --task "$TASK" --output "$PREPARED"
 
 可选 `--config recipe.yaml` 覆盖 `ik` 或 `mpc` 的字段；字段及默认值见 `spider/h2r/settings.py`，未知字段会报错。配置改变需要新的 prepared 目录。
 
-prepare 对 IK 得到的零速度初态做 SPIDER 自己的预检：关节限位，以及任一接触穿透不超过 `PRECHECK_MAX_PENETRATION_M = 0.02 m`（`spider/h2r/prepare.py`）。该常数是方法侧设置；评估的准入阈值是评估配置，不提供给方法，两者数值可以不同。预检失败时保留 `initialization.json` 诊断，但不生成可部署的 `h2r_binding.json`。原生 IK 没有碰撞避免，示范中手贴近桌面或物体的首帧可能因此被拒绝，这是保留的原生限制。
+prepare 对 IK 得到的零速度初态做 SPIDER 自己的预检：关节限位，以及任一接触穿透不超过 `PRECHECK_MAX_PENETRATION_M = 0.02 m`（`spider/h2r/prepare.py`，与评估的默认准入阈值相同）。原生 IK 没有碰撞避免，示范中手贴近桌面或物体的首帧可能穿透；这是方法本身的缺陷，计为该任务的失败，不修正初态，也不把任务移出集合。预检不通过时 prepare 照常完成，`initialization.json` 记录穿透的几何体对；plan 不运行 MPC，只封存这个初态（`deployment: initial-pose-only`，不含控制）。评估客户端照常提出该初态，由评估的初始化准入记录为 `initial_collision`；若评估在更宽松的阈值下接受了它，客户端在第一个控制周期明确报错，不发送任何控制。
 
 | 产物 | 用途 |
 | --- | --- |
@@ -104,16 +104,16 @@ h2r-bench summarize-evaluations --batch "$BATCH"
 
 ## 适配配方与边界
 
-固定上游 `44717007de41cbef7565dff7ff9f4453557a2d3d`，使用 README 推荐的 `preprocess/ik_fast.py` → `examples/run_mjwp_fast.py`。固定 YAML 保存在 `spider/h2r/config/`；配置只读取算法字段，任务、机器人、资产与速度仍由 bench 提供。显式 `--config` 最后覆盖，实际值封存到 `resolved_config.yaml`。
+固定上游 `44717007de41cbef7565dff7ff9f4453557a2d3d`，使用 README 推荐的 `preprocess/ik_fast.py` → `examples/run_mjwp_fast.py`。固定 YAML 保存在 `spider/h2r/config/`；配置只读取算法字段，任务、机器人、资产与速度仍由 bench 提供。解析顺序为上游基础默认值、数据集 fast override、H2R 适配层 `spider/h2r/config/h2r.yaml`、显式 `--config`，实际值封存到 `resolved_config.yaml`。
 
 配方按 `task.dataset` 选择，`settings.DATASET_RECIPES` 恰好列出 bench 的四个数据集；未列出的数据集直接报错，不回退到其他配方。
 
 | 数据集 | override | samples／iterations | ctrl／horizon／knot（s） | temperature | sanity check |
 | --- | --- | --- | --- | --- | --- |
-| ARCTIC | `arcticv2_fast` | 1024／4 | 1.5／3／1 | 1 | 关闭 |
-| OakInk2 | `oakinkv2_fast` | 1024／4 | 1.5／3／1 | 1 | 3 s |
-| HOT3D | 无（基础 default） | 1024／32 | .4／1.6／.4 | .1 | 3 s |
-| TACO | 无（基础 default） | 1024／32 | .4／1.6／.4 | .1 | 3 s |
+| ARCTIC | `arcticv2_fast` | 1024／4 | 1.5／3／1 | 1 | 关闭（上游配方即关闭） |
+| OakInk2 | `oakinkv2_fast` | 1024／4 | 1.5／3／1 | 1 | 关闭（上游 3 s） |
+| HOT3D | 无（基础 default） | 1024／32 | .4／1.6／.4 | .1 | 关闭（上游 3 s） |
+| TACO | 无（基础 default） | 1024／32 | .4／1.6／.4 | .1 | 关闭（上游 3 s） |
 
 上游没有 HOT3D 和 TACO 的 fast override，二者使用固定的基础默认值；不借用其他数据集的配方。上游另有 GigaHand、OakInk 的 override，bench 不分发这两个数据集，其副本已从本仓库移除，需要时取自上述上游 revision。
 
@@ -124,10 +124,10 @@ h2r-bench summarize-evaluations --batch "$BATCH"
 - **参考处理**：使用 demo 的真实 reference rate，保留默认最后一帧裁剪、3 帧 valid 平均、差分、首帧丢弃。free-root 四元数在平滑前归一化并对齐符号，平滑后重新归一化，再由 `mj_differentiatePos` 求 qvel。三处 qpos 插值保持原位置、时间映射及分量线性插值，前后处理 quaternion slices，形成 NLERP；不使用 SLERP。平移、scalar joints 和 ctrl 保持原值；qvel 独立线性插值并保持端点速度，不作为最终 NLERP 曲线的解析导数。非法源四元数或近零平均结果明确拒绝。原始 IK 与 filtered 数组均保存。
 - **参考时间边界**：上游 `process_config` 先从基础 .02 s 求 ref_steps，再读数据集 ref_dt；此顺序保留在插值因子中。上游 H*n 插值数组会重置起点并改变时间跨度；这里将每个插值值明确对应到原始窗口中心的源时间，再采样到私有 sim_dt 网格。完整任务的前后端点保持，不裁剪共同任务或改变其速度。这是显式时间边界转换，不能声称与上游错误计时逐帧等价。
 - **规划**：最后一轮使用真实最佳样本；优化参考为 `[s+1:s+horizon+1]`，初始化控制为 `[0:horizon]`。状态快照推进、移窗、重试、boost 与锚点回退均发生在私有世界。普通成功不会自动清除 local boost；越过恢复锚点后才按上游重置。
-- **初始化与物理**：方法平滑参考与共同物体初态分开。共同初态使用参考首帧的物体姿态、IK 机器人位置、零速度、无 warm-up。上游 sanity check 在私有 CPU 模型以 .002 s 积分、保持首个控制，检查最大 root 漂移，默认 3 s／.01 m／.3 rad；基础默认值与 OakInk2 配方启用，ARCTIC 配方按原生关闭。首帧物体悬空且保持首个控制握不住的任务会在这里明确失败（`error.json` 说明原因），这是保留的原生要求，不在默认配方中关闭。评估场景、MuJoCo backend 和初始化规则不变。
+- **初始化与物理**：方法平滑参考与共同物体初态分开。共同初态使用参考首帧的物体姿态、IK 机器人位置、零速度、无 warm-up。上游 sanity check 在私有 CPU 模型以 .002 s 积分、保持首个控制，检查最大 root 漂移（上游 3 s／.01 m／.3 rad，基础默认值与 OakInk2 配方启用）；H2R 默认关闭它，见下方明确例外。评估场景、MuJoCo backend 和初始化规则不变。
 - **时钟**：三个时钟各自独立。私有规划物理与动作均为 `mpc.sim_dt = 0.01 s`，重规划间隔 `ctrl_dt` 按数据集配方；plan 以 0.01 s 的动作周期发布。评估物理步长是评估设置（当前所有任务 300 Hz），客户端只从 `hello.dt_s` 得知：start 声明 `control_dt_s = 0.01`，每个动作保持 `control_dt_s / hello.dt_s` 个物理步（300 Hz 时为 3），最后一个动作可以更短。0.01 s 不是评估步长整数倍时 start 被拒绝，不取整。
 - **具名映射**：多 free root、固定根和被动 hinge 均按 `task.object_binding` 的名称解析。reward/noise 的 wrist/finger/root 地址由 task 解析，被动 hinge 使用 object rotation 权重；成功门槛保留原生 root 检查，双手任务保留上游“参考全零即物体缺席”的哨兵，单手任务与上游单手分支一样没有该哨兵。没有资产 fallback，不删除 context 物体。
-- **明确例外**：按用户要求，`num_dr=num_dyn=1` 使用 nominal 参数，不保留上游 `linspace(...,1)` 产生的非零偏移；free-root 旋转使用上述符号对齐与归一化修正，不能宣称与 original 逐值等价。其他 DR 数量明确拒绝。contact guidance/Gibbs 在上游 fast 不受支持；保持关闭。不顺带修正上游 NaN 选择等其他缺陷。
+- **明确例外**：上游 sanity check 默认关闭：`spider/h2r/config/h2r.yaml` 设 `mpc.sanity_check_seconds: 0.0`（项目决定，2026-11-15），因为部分任务首帧物体由手握持、悬空起始，保持首个控制时物体不会静止；`--config` 设 `mpc.sanity_check_seconds: 3.0` 可恢复上游行为。按用户要求，`num_dr=num_dyn=1` 使用 nominal 参数，不保留上游 `linspace(...,1)` 产生的非零偏移；free-root 旋转使用上述符号对齐与归一化修正，不能宣称与 original 逐值等价。其他 DR 数量明确拒绝。contact guidance/Gibbs 在上游 fast 不受支持；保持关闭。不顺带修正上游 NaN 选择等其他缺陷。
 - **部署**：每个 seq 离线规划一次，sim/sim-dr 复用同一控制。没有在线执行入口：已执行的真实评估动作无法回退，不能将删掉回退的循环称为完整 upstream fast。
 
 通信协议为 `h2r-evaluation-v2`，收发与 start 请求使用 `h2r_io.client`。客户端核对协议、`task_id`、关节名称与单位；`task_id` 已确定评估方运行的就是规划所用的任务，不再逐项比较物体、观测与环境描述。start 的 binding 为 `{demo_id, robot_id, method: "spider", controller: plan.json}`。仅返回 `joint_targets`，没有 root wrench、物体辅助力、评估 reset 或方法提前终止。每次评估的 binding 与控制日志记录相同 `plan_id`，规划耗时与评估耗时分别保存。

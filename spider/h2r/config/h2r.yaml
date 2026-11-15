@@ -1,0 +1,8 @@
+# H2R adaptation settings. They apply over the pinned upstream base default and the
+# dataset's fast override, and under an explicit --config; the resolved values are
+# sealed in the prepared resolved_config.yaml.
+mpc:
+  # Upstream's initial-state sanity check holds the first control for this many seconds
+  # and stops planning if an object drifts. Off for H2R (project decision, 2026-11-15):
+  # some tasks start with the object held in the hand. 3.0 restores the upstream value.
+  sanity_check_seconds: 0.0

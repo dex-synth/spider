@@ -9,6 +9,9 @@ from .settings import PIPELINE
 
 PREPARED_FORMAT = "spider-h2r-v5"
 PLAN_FORMAT = "spider-h2r-plan-v5"
+# A plan without controls: the IK initial pose failed SPIDER's pre-check, so it is only
+# proposed to the evaluation, which records the method's failure at initialization.
+INITIAL_POSE_ONLY = "initial-pose-only"
 PREPARED_FILES = {
     "trajectory_ikrollout.npz",
     "trajectory_keypoints.npz",

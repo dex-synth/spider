@@ -6,7 +6,13 @@ from pathlib import Path
 
 import numpy as np
 
-from .artifacts import PLAN_FORMAT, arrays, validate_binding, validate_prepared
+from .artifacts import (
+    INITIAL_POSE_ONLY,
+    PLAN_FORMAT,
+    arrays,
+    validate_binding,
+    validate_prepared,
+)
 from .h2r_io.files import content_hash, read_json, verify_files
 
 
@@ -25,7 +31,8 @@ def control_count(duration_s, control_dt_s):
 def load_plan(path, task):
     """Require a complete, finite control sequence on the plan's own control clock.
 
-    Returns the plan manifest, its arrays and the named initial robot proposal.
+    An initial-pose-only plan holds no controls. Returns the plan manifest, its arrays
+    and the named initial robot proposal.
     """
     path = Path(path)
     binding = read_json(path / "plan.json")
@@ -42,13 +49,20 @@ def load_plan(path, task):
         or binding["joint_units"] != semantics["joint_units"]
     ):
         raise ValueError("Plan robot joint semantics differ")
-    required = {"trajectory_mjwp.npz", "initial_robot.json", "resolved_config.yaml"}
+    required = {
+        "trajectory_mjwp.npz",
+        "initial_robot.json",
+        "initialization.json",
+        "resolved_config.yaml",
+    }
     if not required <= binding["files"].keys():
         raise ValueError("Incomplete SPIDER plan files")
     verify_files(path, binding["files"])
     data = arrays(path / "trajectory_mjwp.npz")
     period = binding["control_dt_s"]
     count = control_count(task.duration_s, period)
+    if binding["deployment"] == INITIAL_POSE_ONLY:
+        count = 0
     if (
         binding["controls"] != count
         or not np.array_equal(data["time_s"], np.arange(count) * period)
@@ -77,6 +91,12 @@ class Replay:
         tick = frame["tick"]
         if len(joint_names) != len(names) or set(joint_names) != set(names):
             raise ValueError("Evaluation robot joints differ from the plan")
+        if self.binding["deployment"] == INITIAL_POSE_ONLY:
+            raise ValueError(
+                "SPIDER did not plan this task: its IK initial pose fails SPIDER's "
+                "pre-check (see the plan's initialization.json), yet the evaluation "
+                "accepted it under a looser admission threshold"
+            )
         if (
             type(tick) is not int
             or self.index >= len(self.targets)

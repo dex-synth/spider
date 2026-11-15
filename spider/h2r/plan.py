@@ -9,11 +9,52 @@ from pathlib import Path
 
 import numpy as np
 
-from .artifacts import PLAN_FORMAT, load_prepared, task_identity
+from .artifacts import INITIAL_POSE_ONLY, PLAN_FORMAT, load_prepared, task_identity
 from .fast_loop import run_fast
 from .h2r_io import load_task
-from .h2r_io.files import content_hash, sha256, write_json
+from .h2r_io.files import content_hash, read_json, sha256, write_json
 from .replay import control_count
+from .settings import settings
+
+
+def _seal(output, task, prepared, binding, seed, control_dt, targets, record):
+    """Write the replayed controls and the plan manifest; `record` adds plan-specific fields."""
+    times = np.arange(len(targets)) * control_dt
+    np.savez_compressed(
+        output / "trajectory_mjwp.npz",
+        time_s=times,
+        joint_targets=targets,
+        **record.pop("arrays", {}),
+    )
+    for name in ("initial_robot.json", "initialization.json", "resolved_config.yaml"):
+        shutil.copy2(prepared / name, output / name)
+    repo = Path(__file__).resolve().parents[2]
+    semantics = task.robot.semantics
+    manifest = {
+        "format": PLAN_FORMAT,
+        **task_identity(task),
+        "planning_backend": "mjwarp",
+        "planning_seed": seed,
+        "method_revision": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+        ).strip(),
+        "method_worktree_dirty": bool(
+            subprocess.check_output(
+                ["git", "status", "--porcelain"], cwd=repo, text=True
+            )
+        ),
+        "preparation_binding_sha256": sha256(prepared / "h2r_binding.json"),
+        "preparation": binding,
+        "joint_names": semantics["joint_names"],
+        "joint_units": semantics["joint_units"],
+        "control_dt_s": control_dt,
+        "controls": len(targets),
+        **record,
+        "files": {p.name: sha256(p) for p in sorted(output.iterdir()) if p.is_file()},
+    }
+    manifest["plan_id"] = content_hash(manifest)
+    write_json(output / "plan.json", manifest)
+    return output
 
 
 def plan(prepared, task_path, output, device, seed):
@@ -29,9 +70,25 @@ def plan(prepared, task_path, output, device, seed):
     binding = load_prepared(prepared, task)
     output.mkdir(parents=True, exist_ok=False)
     started = time.perf_counter()
-    controller = Controller(prepared, task, device, seed)
     # The plan is published on SPIDER's native action clock, not on evaluation ticks.
-    control_dt = float(controller.config.sim_dt)
+    control_dt = float(settings(prepared / "resolved_config.yaml")["mpc"]["sim_dt"])
+    if not read_json(prepared / "initialization.json")["accepted"]:
+        # The IK initial pose penetrates the scene: a failure of the method. The plan
+        # proposes that pose so the evaluation records the failure, and holds no
+        # controls, since the evaluation rejects such a start.
+        print("IK initial pose fails SPIDER's pre-check: no planning", flush=True)
+        names = task.robot.semantics["joint_names"]
+        return _seal(
+            output,
+            task,
+            prepared,
+            binding,
+            seed,
+            control_dt,
+            np.zeros((0, len(names))),
+            {"deployment": INITIAL_POSE_ONLY},
+        )
+    controller = Controller(prepared, task, device, seed)
     count = control_count(task.duration_s, control_dt)
     with (output / "planning.jsonl").open("w") as log:
 
@@ -87,50 +144,23 @@ def plan(prepared, task_path, output, device, seed):
         [list(controller.layout.targets(value).values()) for value in ctrl]
     )
     times = np.arange(count) * control_dt
-    np.savez_compressed(
-        output / "trajectory_mjwp.npz",
-        time_s=times,
-        joint_targets=targets,
-        ctrl=ctrl,
-        # Private planning states after each control: diagnostics, never replayed.
-        state_time_s=times + control_dt,
-        qpos=qpos,
-        qvel=qvel,
-    )
-    for name in ("initial_robot.json", "resolved_config.yaml"):
-        shutil.copy2(prepared / name, output / name)
-    repo = Path(__file__).resolve().parents[2]
-    manifest = {
-        "format": PLAN_FORMAT,
-        **task_identity(task),
+    record = {
         "deployment": "offline-control-replay",
-        "planning_backend": "mjwarp",
-        "planning_seed": seed,
-        "method_revision": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=repo, text=True
-        ).strip(),
-        "method_worktree_dirty": bool(
-            subprocess.check_output(
-                ["git", "status", "--porcelain"], cwd=repo, text=True
-            )
-        ),
-        "preparation_binding_sha256": sha256(prepared / "h2r_binding.json"),
-        "preparation": binding,
-        "joint_names": controller.layout.names,
-        "joint_units": task.robot.semantics["joint_units"],
-        "control_dt_s": control_dt,
-        "controls": count,
+        # Private planning states after each control: diagnostics, never replayed.
+        "arrays": {
+            "ctrl": ctrl,
+            "state_time_s": times + control_dt,
+            "qpos": qpos,
+            "qvel": qvel,
+        },
         "clock": {
             "replan_dt_s": controller.config.ctrl_dt,
             "private_physics_dt_s": control_dt / controller.config.physics_substeps,
             "planning_state_times": "time_s + control_dt_s (post-step diagnostic)",
         },
         "plan_elapsed_s": time.perf_counter() - started,
-        "files": {p.name: sha256(p) for p in sorted(output.iterdir()) if p.is_file()},
     }
-    manifest["plan_id"] = content_hash(manifest)
-    write_json(output / "plan.json", manifest)
-    return output
+    return _seal(output, task, prepared, binding, seed, control_dt, targets, record)
 
 
 def main():

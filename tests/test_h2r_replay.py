@@ -34,6 +34,7 @@ def write_plan(root, task, targets, control_dt_s=0.01):
         joint_targets=targets,
     )
     write_json(root / "initial_robot.json", {"x": 0.01, "finger": 0.02})
+    write_json(root / "initialization.json", {"accepted": True})
     (root / "resolved_config.yaml").write_text("{}\n")
     semantics = task.robot.semantics
     binding = {
@@ -99,6 +100,7 @@ class ReplayTests(unittest.TestCase):
             prepared.mkdir()
             write_json(prepared / "h2r_binding.json", PREPARATION)
             write_json(prepared / "initial_robot.json", {"x": 0.0, "finger": 0.0})
+            write_json(prepared / "initialization.json", {"accepted": True})
             (prepared / "resolved_config.yaml").write_text("{}\n")
             with (
                 patch("spider.h2r.plan.load_task", return_value=self.task),
@@ -129,6 +131,33 @@ class ReplayTests(unittest.TestCase):
                 data["joint_targets"], np.column_stack((np.arange(7), -np.arange(7)))
             )
             self.assertEqual(initial, {"x": 0.0, "finger": 0.0})
+
+    def test_rejected_initial_pose_is_proposed_without_planning(self):
+        """A penetrating IK start is the method's failure: no MPC, and no controls."""
+        from spider.h2r.plan import plan
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prepared, output = root / "prepared", root / "plan"
+            prepared.mkdir()
+            write_json(prepared / "h2r_binding.json", PREPARATION)
+            write_json(prepared / "initial_robot.json", {"x": 0.0, "finger": 0.0})
+            write_json(prepared / "initialization.json", {"accepted": False})
+            (prepared / "resolved_config.yaml").write_text("{}\n")
+            with (
+                patch("spider.h2r.plan.load_task", return_value=self.task),
+                patch("spider.h2r.plan.load_prepared", return_value=PREPARATION),
+                patch("spider.h2r.controller.Controller", side_effect=AssertionError),
+            ):
+                plan(prepared, root / "task", output, "cpu", 0)
+            manifest, data, initial = load_plan(output, self.task)
+            self.assertEqual(manifest["deployment"], "initial-pose-only")
+            self.assertEqual((manifest["controls"], len(data["joint_targets"])), (0, 0))
+            self.assertEqual(initial, {"x": 0.0, "finger": 0.0})
+            self.assertFalse(read_json(output / "initialization.json")["accepted"])
+            replay = Replay(manifest, data, 3)
+            with self.assertRaisesRegex(ValueError, "did not plan this task"):
+                replay.control({"tick": 0}, NAMES)
 
     def test_evaluations_share_identical_controls_at_any_physics_step(self):
         """Ignore observations; derive ticks from the evaluation's own step."""

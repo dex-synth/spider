@@ -10,7 +10,7 @@
 - 使用独立 Python 3.12 环境与本仓库依赖。开发环境见 `scripts/h2r_environment.sh`，不要升级共享环境中的其他方法依赖。
 - 修改输入／模型边界时验证 task 文件闭包、物理参数保持和拒绝路径；修改算法时检查原生语义。
 - Baseline 只修正相对所选上游流水线的适配错误；原生已有的算法缺陷、无碰撞避免约束等保持原样，不以提升成绩为由增加算法能力。原论文入口与后来的 fast 变体须分别标明，不能混合其步骤或默认值后声称完整复现。
-- 当前默认为上游 fast：按数据集读取固定 YAML，最后一轮取最佳样本并从快照推进，保留重试／回退。明确授权的例外是 `num_dr=1` 不施加上游非零参数偏移，以及 free-root 四元数的符号对齐、平滑后归一化与 NLERP；保持窗口、插值位置、时钟及独立速度插值，不顺带修其他原生缺陷。
+- 当前默认为上游 fast：按数据集读取固定 YAML，最后一轮取最佳样本并从快照推进，保留重试／回退。明确授权的例外是 `num_dr=1` 不施加上游非零参数偏移，free-root 四元数的符号对齐、平滑后归一化与 NLERP，以及默认关闭上游 sanity check（`spider/h2r/config/h2r.yaml`）；保持窗口、插值位置、时钟及独立速度插值，不顺带修其他原生缺陷。
 - prepared 须带 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，缺失或未知时重新 prepare。
 - 时钟各归其主：plan 以方法的原生动作周期（`control_dt_s`，0.01 s）发布，不保存物理 tick；评估物理步长只取自 `hello.dt_s` 或 rollout 的 `run.json`，不取自 task。初始穿透预检使用方法侧常数，不从 task 读取。
 - 数据集配方在 `settings.DATASET_RECIPES` 中逐一列出（arctic、oakink2、hot3d、taco），未知数据集报错；按 `task.hand_sides` 处理单手与双手，不按关节数或机器人变体名判断。
