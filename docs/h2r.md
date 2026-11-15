@@ -167,7 +167,18 @@ python -m unittest discover -s tests -p 'test_h2r*.py' -v
 
 调试配置只改 `mpc.object_pos_threshold`、`mpc.object_rot_threshold`、`mpc.max_local_retries`、`mpc.max_revert_depth`（HOT3D 另改 `mpc.max_num_iterations`），经 `--config` 显式传入；它们的 plan 不代表原生配方的结果。另用同一调试配置在一条通过预检的 TACO 任务（`seq_20231031_116`）上走通了规划与评估。
 
-对整个 suite 只运行 prepare 与上游 sanity check 的 CPU 诊断：40 个任务中 12 个被初态预检拒绝（TACO 7、OakInk2 4、HOT3D 1，其中 11 个是手—桌面穿透），其余 28 个中有 3 个不满足 sanity check（OakInk2、HOT3D、TACO 各 1 个）。这些是保留的原生限制，对应任务没有可部署的 plan。
+对整个 suite 只运行 prepare 与上游 sanity check 的 CPU 诊断：40 个任务中 12 个被初态预检拒绝（TACO 7、OakInk2 4、HOT3D 1，其中 11 个是手—桌面穿透），其余 28 个中有 3 个不满足 sanity check（OakInk2、HOT3D、TACO 各 1 个）。以上是第一轮的结果。
+
+第二轮（2026-11-15，SPIDER `d8e1ccc` 起：IK 初态穿透计为失败，上游 sanity check 默认关闭；suite `h2r-v1-15c73556`，四个数据集统一滑动摩擦 2.0；记录在 `runs/checks/20261115-unified-format/stage5/spider-v2/`）：
+
+| task | 规划 | 两个 seed 的结束原因 |
+| --- | --- | --- |
+| TACO `seq_20230930_121` | 初态预检不通过，plan 只封存初态（15 s，不运行 MPC） | `initial_collision`：右手掌与桌面 25.5 mm、左手食指近节 24.6 mm，均超过 20 mm |
+| OakInk2 `scene_03__A004…st07`（此前不满足 sanity check） | 原生配方 40 min 未完成，期间反复出现 `nefc overflow`（OakInk2 配方的约束容量 350 不足） | 无 plan |
+| HOT3D `P0011_cd22f5e0_seg006`（此前不满足 sanity check） | 调试配置（关闭跟踪门槛、8 轮），398 s | `target_end` |
+| TACO `seq_20231103_139`（此前不满足 sanity check） | 调试配置，371 s | `target_end` |
+
+三个 rollout 的 `spider.h2r.check` 均确认提交控制与 plan 一致；`initial_collision` 一例没有提交任何控制。
 
 右手任务的 plan 另在 600 Hz 评估步长（每控制 6 个物理步）和 `sim-dr` 下完成回放与核验；240 Hz 步长下 0.01 s 不是整数倍，客户端在 start 前报错。未运行的部分：其余 suite 任务的规划与评估、左手单手任务的真实数据（suite 中没有）、MJWarp 评估 backend、ARCTIC／HOT3D 原生配方的完整规划。
 
