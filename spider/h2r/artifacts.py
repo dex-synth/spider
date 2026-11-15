@@ -50,11 +50,11 @@ def validate_binding(binding, task, expected, name):
 def validate_prepared(binding, task):
     """Accept method references only; the physical model always comes from the task."""
     validate_binding(binding, task, PREPARED_FORMAT, "preparation")
-    if set(binding["files"]) != PREPARED_FILES:
+    if set(binding.get("files", ())) != PREPARED_FILES:
         raise ValueError(
             "Prepared files must contain only method references and configuration"
         )
-    processing = binding["pipeline"]["rotation_processing"]
+    processing = binding.get("pipeline", {}).get("rotation_processing")
     if processing != PIPELINE["rotation_processing"]:
         raise ValueError(
             "Regenerate SPIDER preparation from --task "
