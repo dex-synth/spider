@@ -26,7 +26,7 @@ class Config:
     embodiment_type: str = "h2r"
 
     # === SIMULATOR CONFIGURATION ===
-    simulator: str = "mjwp"  # "isaac" | "mujoco" | "mjwp" | "mjwp_cons" | "mjwp_eq" | "mjwp_cons_eq" | "kinematic"
+    simulator: str = "cpu"  # "cpu" | "mjwp" | "mjwp_cons" | "mjwp_eq" | "mjwp_cons_eq" | "isaac" | "mujoco" | "kinematic" | "chord" | ...
     device: str = "cuda:0"
     sanity_check_seconds: float = 3.0
     sanity_check_pos_thresh: float = 0.01
@@ -127,6 +127,18 @@ class Config:
     terminal_rew_scale: float = 1.0
     contact_rew_scale: float = 0.0
 
+    # === VISUALIZATION CONFIGURATION ===
+    show_viewer: bool = True
+    viewer: str = "viser"  # "mujoco" | "rerun" | "viser" | "isaac"
+    wait_on_finish: bool = True  # block after optimization to keep viewer alive
+    rerun_spawn: bool = False
+    save_video: bool = True
+    save_info: bool = True
+    save_rerun: bool = False
+    save_viser: bool = False
+    save_metrics: bool = True
+    save_config: bool = True
+
     # === TRACE RECORDING ===
     trace_dt: float = 1 / 50.0
     num_trace_uniform_samples: int = 4
@@ -215,7 +227,8 @@ def get_noise_scale(config: Config) -> torch.Tensor:
     noise_scale[0] *= 0.0
     # set last few samples to exploit_noise_scale
     num_exploit_samples = int(config.num_samples * config.exploit_ratio)
-    noise_scale[-num_exploit_samples:] *= config.exploit_noise_scale
+    if num_exploit_samples > 0:  # [-0:] would be every sample
+        noise_scale[-num_exploit_samples:] *= config.exploit_noise_scale
     return noise_scale
 
 
