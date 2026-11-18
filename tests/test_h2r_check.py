@@ -11,7 +11,7 @@ from test_h2r_integration import memory_task
 from test_h2r_replay import write_plan
 
 from spider.h2r.check import check, json_lines
-from spider.h2r.h2r_io.files import read_json, write_json
+from spider.h2r.h2r_io.files import read_json, sha256, write_json
 
 
 def write_lines(path, rows):
@@ -41,7 +41,8 @@ class CheckTests(unittest.TestCase):
             "demo_id": "demo",
             "robot_id": "robot",
             "method": "spider",
-            "controller": binding,
+            # What `load_plan` reports: the manifest and the hash of plan.json.
+            "controller": {**binding, "sha256": sha256(self.plan / "plan.json")},
         }
         results = {}
         for seed, last_valid, ended in ((0, 20, 20), (1, 13, 14), (2, None, 0)):

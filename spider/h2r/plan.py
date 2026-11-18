@@ -9,31 +9,58 @@ from pathlib import Path
 
 import numpy as np
 
-from .artifacts import INITIAL_POSE_ONLY, PLAN_FORMAT, load_prepared, task_identity
+from .artifacts import (
+    INITIAL_POSE_ONLY,
+    PLAN_FORMAT,
+    REFERENCE_MINK,
+    load_prepared,
+    task_identity,
+)
 from .fast_loop import run_fast
 from .h2r_io import load_task
 from .h2r_io.files import content_hash, read_json, sha256, write_json
 from .replay import control_count
 from .settings import settings
 
+# The replayed controls of the fast MJWarp recipe; the manifest names the file.
+CONTROLS_FILE = "trajectory_mjwp.npz"
+COPIED = ("initial_robot.json", "initialization.json", "resolved_config.yaml")
 
-def _seal(output, task, prepared, binding, seed, control_dt, targets, record):
-    """Write the replayed controls and the plan manifest; `record` adds plan-specific fields."""
+
+def seal(
+    output,
+    task,
+    prepared,
+    binding,
+    seed,
+    control_dt,
+    targets,
+    record,
+    *,
+    backend="mjwarp",
+    controls_file=CONTROLS_FILE,
+    copied=COPIED,
+):
+    """Write the replayed controls and the plan manifest.
+
+    `record` adds plan-specific fields; `copied` are the preparation's files the
+    plan carries along.
+    """
     times = np.arange(len(targets)) * control_dt
     np.savez_compressed(
-        output / "trajectory_mjwp.npz",
+        output / controls_file,
         time_s=times,
         joint_targets=targets,
         **record.pop("arrays", {}),
     )
-    for name in ("initial_robot.json", "initialization.json", "resolved_config.yaml"):
+    for name in copied:
         shutil.copy2(prepared / name, output / name)
     repo = Path(__file__).resolve().parents[2]
     semantics = task.robot.semantics
     manifest = {
         "format": PLAN_FORMAT,
         **task_identity(task),
-        "planning_backend": "mjwarp",
+        "planning_backend": backend,
         "planning_seed": seed,
         "method_revision": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=repo, text=True
@@ -49,6 +76,7 @@ def _seal(output, task, prepared, binding, seed, control_dt, targets, record):
         "joint_units": semantics["joint_units"],
         "control_dt_s": control_dt,
         "controls": len(targets),
+        "controls_file": controls_file,
         **record,
         "files": {p.name: sha256(p) for p in sorted(output.iterdir()) if p.is_file()},
     }
@@ -67,7 +95,7 @@ def plan(prepared, task_path, output, device, seed):
     task = load_task(task_path)
     if output.is_relative_to(prepared) or output.is_relative_to(task.path):
         raise ValueError("Plan output must be outside its inputs")
-    binding = load_prepared(prepared, task)
+    binding = load_prepared(prepared, task, REFERENCE_MINK)
     output.mkdir(parents=True, exist_ok=False)
     started = time.perf_counter()
     # The plan is published on SPIDER's native action clock, not on evaluation ticks.
@@ -78,7 +106,7 @@ def plan(prepared, task_path, output, device, seed):
         # controls, since the evaluation rejects such a start.
         print("IK initial pose fails SPIDER's pre-check: no planning", flush=True)
         names = task.robot.semantics["joint_names"]
-        return _seal(
+        return seal(
             output,
             task,
             prepared,
@@ -86,7 +114,7 @@ def plan(prepared, task_path, output, device, seed):
             seed,
             control_dt,
             np.zeros((0, len(names))),
-            {"deployment": INITIAL_POSE_ONLY},
+            {"deployment": INITIAL_POSE_ONLY, "recipe": "mjwp-fast"},
         )
     controller = Controller(prepared, task, device, seed)
     count = control_count(task.duration_s, control_dt)
@@ -146,6 +174,7 @@ def plan(prepared, task_path, output, device, seed):
     times = np.arange(count) * control_dt
     record = {
         "deployment": "offline-control-replay",
+        "recipe": "mjwp-fast",
         # Private planning states after each control: diagnostics, never replayed.
         "arrays": {
             "ctrl": ctrl,
@@ -160,7 +189,7 @@ def plan(prepared, task_path, output, device, seed):
         },
         "plan_elapsed_s": time.perf_counter() - started,
     }
-    return _seal(output, task, prepared, binding, seed, control_dt, targets, record)
+    return seal(output, task, prepared, binding, seed, control_dt, targets, record)
 
 
 def main():

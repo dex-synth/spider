@@ -10,7 +10,12 @@ from unittest.mock import patch
 import numpy as np
 from test_h2r_integration import memory_task
 
-from spider.h2r.artifacts import PLAN_FORMAT, PREPARED_FILES, PREPARED_FORMAT
+from spider.h2r.artifacts import (
+    PLAN_FORMAT,
+    PREPARED_FILES,
+    PREPARED_FORMAT,
+    REFERENCE_MINK,
+)
 from spider.h2r.h2r_io import client
 from spider.h2r.h2r_io.files import content_hash, read_json, sha256, write_json
 from spider.h2r.replay import Replay, control_count, load_plan
@@ -21,8 +26,9 @@ IDENTITIES = {"task_id": "task", "demo_id": "demo", "robot_id": "robot"}
 PREPARATION = {
     **IDENTITIES,
     "format": PREPARED_FORMAT,
+    "reference": REFERENCE_MINK,
     "pipeline": PIPELINE,
-    "files": dict.fromkeys(PREPARED_FILES, "test-digest"),
+    "files": dict.fromkeys(PREPARED_FILES[REFERENCE_MINK], "test-digest"),
 }
 
 
@@ -46,6 +52,7 @@ def write_plan(root, task, targets, control_dt_s=0.01):
         "joint_units": semantics["joint_units"],
         "control_dt_s": control_dt_s,
         "controls": len(targets),
+        "controls_file": "trajectory_mjwp.npz",
         "files": {p.name: sha256(p) for p in root.iterdir() if p.name != "plan.json"},
     }
     binding["plan_id"] = content_hash(binding)
@@ -118,7 +125,9 @@ class ReplayTests(unittest.TestCase):
                     read_json(failed / "failure.json")["required_native_steps"], 7
                 )
             manifest, data, initial = load_plan(output, self.task)
-            self.assertEqual(manifest["format"], "spider-h2r-plan-v5")
+            self.assertEqual(manifest["format"], "spider-h2r-plan-v6")
+            self.assertEqual(manifest["recipe"], "mjwp-fast")
+            self.assertEqual(manifest["controls_file"], "trajectory_mjwp.npz")
             self.assertEqual(manifest["preparation"]["pipeline"], PIPELINE)
             self.assertEqual(
                 (manifest["control_dt_s"], manifest["controls"]), (0.01, 7)
@@ -190,12 +199,12 @@ class ReplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original = write_plan(root, self.task, self.targets)
-            for legacy in ("spider-h2r-plan-v4", "spider-h2r-plan-v1", None):
+            for legacy in ("spider-h2r-plan-v5", "spider-h2r-plan-v1", None):
                 changed = copy.deepcopy(original)
                 if legacy:
                     changed["format"] = legacy
                 else:
-                    changed["preparation"]["format"] = "spider-h2r-v4"
+                    changed["preparation"]["format"] = "spider-h2r-v5"
                 changed["plan_id"] = content_hash(
                     {k: v for k, v in changed.items() if k != "plan_id"}
                 )

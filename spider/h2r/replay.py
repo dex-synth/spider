@@ -13,7 +13,7 @@ from .artifacts import (
     validate_binding,
     validate_prepared,
 )
-from .h2r_io.files import content_hash, read_json, verify_files
+from .h2r_io.files import content_hash, read_json, sha256, verify_files
 
 
 def control_count(duration_s, control_dt_s):
@@ -32,7 +32,9 @@ def load_plan(path, task):
     """Require a complete, finite control sequence on the plan's own control clock.
 
     An initial-pose-only plan holds no controls. Returns the plan manifest, its arrays
-    and the named initial robot proposal.
+    and the named initial robot proposal. The manifest gains `sha256`, the hash of
+    `plan.json`: the controller identity reported to the evaluation, which a build
+    record can be checked against.
     """
     path = Path(path)
     binding = read_json(path / "plan.json")
@@ -49,16 +51,17 @@ def load_plan(path, task):
         or binding["joint_units"] != semantics["joint_units"]
     ):
         raise ValueError("Plan robot joint semantics differ")
+    controls_file = binding.get("controls_file")
     required = {
-        "trajectory_mjwp.npz",
+        controls_file,
         "initial_robot.json",
         "initialization.json",
         "resolved_config.yaml",
     }
-    if not required <= binding["files"].keys():
+    if not isinstance(controls_file, str) or not required <= binding["files"].keys():
         raise ValueError("Incomplete SPIDER plan files")
     verify_files(path, binding["files"])
-    data = arrays(path / "trajectory_mjwp.npz")
+    data = arrays(path / controls_file)
     period = binding["control_dt_s"]
     count = control_count(task.duration_s, period)
     if binding["deployment"] == INITIAL_POSE_ONLY:
@@ -73,6 +76,7 @@ def load_plan(path, task):
     initial = read_json(path / "initial_robot.json")
     if set(initial) != set(names) or not np.isfinite(list(initial.values())).all():
         raise ValueError("Invalid plan initial robot proposal")
+    binding["sha256"] = sha256(path / "plan.json")
     return binding, data, initial
 
 

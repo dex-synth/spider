@@ -18,7 +18,7 @@ from spider.optimizers.sampling_fast import (
 )
 from spider.simulators import mjwp
 
-from .artifacts import arrays, load_prepared
+from .artifacts import REFERENCE_MINK, arrays, load_prepared
 from .h2r_io.files import read_json
 from .model import Layout
 from .reference import native_reference, sample_reference
@@ -36,7 +36,7 @@ class Controller:
         if torch.device(device).type != "cuda":
             raise ValueError("SPIDER H2R MPC requires a CUDA device for MJWarp")
         prepared = Path(prepared)
-        self.binding = load_prepared(prepared, task)
+        self.binding = load_prepared(prepared, task, REFERENCE_MINK)
         self.task = task
         source = arrays(prepared / "trajectory_kinematic.npz")
         options = settings(prepared / "resolved_config.yaml")["mpc"]

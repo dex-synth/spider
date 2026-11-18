@@ -12,7 +12,12 @@ from test_h2r_integration import OBJECTS, SEMANTICS, XML, demo_content
 
 from spider.config import Config
 from spider.h2r import h2r_io
-from spider.h2r.artifacts import PREPARED_FILES, PREPARED_FORMAT, load_prepared
+from spider.h2r.artifacts import (
+    PREPARED_FILES,
+    PREPARED_FORMAT,
+    REFERENCE_MINK,
+    load_prepared,
+)
 from spider.h2r.h2r_io.demo import seal_demo
 from spider.h2r.h2r_io.files import sha256, write_json
 from spider.h2r.h2r_io.robot import seal_robot
@@ -158,15 +163,17 @@ class TaskTests(unittest.TestCase):
             task = h2r_io.load_task(write_task(root / "task"))
             prepared = root / "prepared"
             prepared.mkdir()
-            for name in PREPARED_FILES:
+            files = PREPARED_FILES[REFERENCE_MINK]
+            for name in files:
                 (prepared / name).write_text("test method artifact")
             binding = {
                 "format": PREPARED_FORMAT,
                 "task_id": task.task_id,
                 "demo_id": task.demo.demo_id,
                 "robot_id": task.robot.robot_id,
+                "reference": REFERENCE_MINK,
                 "pipeline": PIPELINE,
-                "files": {name: sha256(prepared / name) for name in PREPARED_FILES},
+                "files": {name: sha256(prepared / name) for name in files},
             }
             write_json(prepared / "h2r_binding.json", binding)
             self.assertEqual(load_prepared(prepared, task), binding)
@@ -176,6 +183,8 @@ class TaskTests(unittest.TestCase):
             for mutation in (
                 {"pipeline": {**PIPELINE, "rotation_processing": "unknown"}},
                 {"pipeline": None},
+                {"reference": "another-ik"},
+                {"reference": None},
                 {"files": {}},
                 {
                     "files": {
@@ -183,7 +192,7 @@ class TaskTests(unittest.TestCase):
                         "custom.xml": sha256(prepared / "custom.xml"),
                     }
                 },
-                *({"format": f"spider-h2r-v{i}"} for i in range(1, 5)),
+                *({"format": f"spider-h2r-v{i}"} for i in range(1, 6)),
             ):
                 write_json(prepared / "h2r_binding.json", {**binding, **mutation})
                 with self.assertRaises(ValueError):

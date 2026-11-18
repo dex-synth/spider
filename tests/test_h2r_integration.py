@@ -418,9 +418,9 @@ class ArtifactAndProtocolTests(unittest.TestCase):
                     load_prepared(root, task)
             write_json(
                 root / "h2r_binding.json",
-                {"format": "spider-h2r-v4", "task_id": "task", "bundle_id": "b"},
+                {"format": "spider-h2r-v5", "task_id": "task", "demo_id": "demo"},
             )
-            with self.assertRaisesRegex(ValueError, "requires spider-h2r-v5"):
+            with self.assertRaisesRegex(ValueError, "requires spider-h2r-v6"):
                 load_prepared(root, task)
 
     def test_start_declares_native_period_and_checks_task(self):

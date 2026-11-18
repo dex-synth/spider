@@ -81,9 +81,10 @@ class Layout:
         q, v = [], []
         for name in names:
             joint = self.model.joint(name)
-            if joint.type[0] not in (
-                mujoco.mjtJoint.mjJNT_SLIDE,
-                mujoco.mjtJoint.mjJNT_HINGE,
+            # Plain integers: `numpy scalar in (enum, ...)` is False from MuJoCo 3.17.
+            if int(joint.type[0]) not in (
+                int(mujoco.mjtJoint.mjJNT_SLIDE),
+                int(mujoco.mjtJoint.mjJNT_HINGE),
             ):
                 raise ValueError(f"Expected scalar joint: {name}")
             q.append(int(joint.qposadr[0]))
