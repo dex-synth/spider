@@ -1,5 +1,6 @@
 """Hashes, JSON and path rules shared by every sealed package."""
 
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -54,14 +55,28 @@ def verify_files(root, files):
 
 
 def read_manifest(root, name, format, identity):
-    """Load a manifest and check its format and identity; `identity` maps the manifest to its id value."""
+    """Load a manifest and check its format and identity; `identity` maps the manifest to its id value.
+
+    Any malformed manifest raises ValueError, so callers need not know the manifest layout.
+    """
     manifest = read_json(Path(root) / name)
     key = format.split("-")[1] + "_id"
-    if manifest.get("format") != format:
+    if not isinstance(manifest, dict) or manifest.get("format") != format:
         raise ValueError(f"Expected {format} in {Path(root).name}/{name}")
-    if content_hash(identity(manifest)) != manifest.get(key):
+    with manifest_fields(f"{Path(root).name}/{name}"):
+        expected = content_hash(identity(manifest))
+    if expected != manifest.get(key):
         raise ValueError(f"Identity changed: {Path(root).name}/{name}")
     return manifest
+
+
+@contextmanager
+def manifest_fields(label):
+    """Report a missing or mistyped manifest field as ValueError."""
+    try:
+        yield
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError(f"Malformed {label}: {type(error).__name__}: {error}") from error
 
 
 def seal(root, name, manifest, identity):

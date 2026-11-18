@@ -93,6 +93,18 @@ python -m spider.h2r.check --plan "$PLAN" --task "$TASK" --run "$ROLLOUT" --outp
 
 客户端在 start 中声明 `control_dt_s = 0.05`；评估物理步长只从 `hello.dt_s` 得知，300 Hz 下每个目标保持 15 个物理步。controller 信息是 `plan.json` 的内容加上它的 sha256。在 bench 中声明评估时使用 `--variant cpu-offline-control-replay --training-backend mujoco`，与 fast MJWarp 配方的结果分属不同比较组；完整命令见 h2r_bench 的 `docs/methods/spider.md`。
 
+## 方法内 rollout 的导出
+
+bench 在独立评估之外，还报告方法在自己的仿真里的表现（`method-sim`，自报）。对 CPU 配方，这条 rollout 就是 plan 本身：
+
+```bash
+python -m spider.h2r.method_rollout --plan "$PLAN" --task "$TASK" --output "$METHOD_ROLLOUT"
+```
+
+入口在单个私有 world 中回放封存的目标：与规划相同的模型、步长和子步数，从评估初态（plan 提出的机器人姿态、物体取参考首帧、零速度）开始，没有辅助和扰动。回放须在 `1e-9` 内重现规划记录的状态（`trajectory_cpu.npz`），否则拒绝导出；MuJoCo 版本与规划时不同会在这里被发现。输出是 `h2r-method-rollout-v1` 包：每个物理步（100 Hz）的机器人关节、物体自由根位姿和物体关节，以及上游 `evaluate_cpu` 的判定（记在 plan 的 `native` 中）。不重新规划，约几秒完成。
+
+初态未通过 SPIDER 预检、没有控制的 plan 导出一条在该姿态停留一个物理步后结束的 rollout，首帧交给 bench 的准入检查。包由 bench 的 `import-method-rollout` 导入并用共同指标计分，见 h2r_bench 的 `docs/methods/spider.md`。
+
 ## 与上游的差异
 
 | 项目 | 上游 CPU workflow | 这里 | 性质 |

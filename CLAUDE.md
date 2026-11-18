@@ -7,6 +7,7 @@
 - IK、MPC、标定、奖励与控制算法留在 SPIDER；bench 独立推进评估物理并计分。
 - 有两个配方，不能混用其步骤、参考或产物：正式的 **CPU 配方**（上游 `dev/cpu` 的 CPU workflow：`spider.h2r.cpu_plan`，参考由 `prepare --reference-from` 从 FlashCHORD 的 V2D IK 导入，见 `docs/h2r-cpu.md`）和可选的 **fast MJWarp 配方**（`ik_fast.py` 加 `spider.h2r.plan`，见 `docs/h2r.md`）。以下未注明的条目描述 fast MJWarp 配方。
 - CPU 配方复用上游的 `examples/run_cpu.py`、`spider/simulators/cpu.py`、`spider/postprocess/evaluate_cpu.py`，这些文件留在上游路径并保持与上游一致，H2R 差异放在 `spider/h2r/cpu_*.py`；对上游文件的改动须在 `docs/h2r-cpu.md` 列出。私有模型按 task 的 `compiled.json` 设置执行器阻尼，其余物理参数只核对不修改。
+- `spider.h2r.method_rollout` 把 CPU plan 的私有回放导出为 bench 的方法内 rollout 包（`method-sim`，自报）：只回放封存目标并核对重现规划状态，不重新规划，不改变 plan 或其格式。
 - `spider.h2r.scene` 仅在内存中添加无质量 tracking sites；MJWarp 只改变明确配置的私有积分 timestep。默认使用 `preprocess/ik_fast.py` 的 Mink 流水线；私有初态稳定性检查使用上游 .002 s timestep，不改变共同评估模型。
 - prepared 保存方法参考，不保存物理场景。产物格式为 `spider-h2r-v6`／`spider-h2r-plan-v6`，绑定 `task_id`、`demo_id`、`robot_id`，并记录参考种类与配方；更早的格式和错配的参考明确拒绝，不能静默迁移。
 - 使用独立 Python 3.12 环境与本仓库依赖。fast MJWarp 配方的环境见 `scripts/h2r_environment.sh`（MuJoCo 3.7），CPU 配方的环境见 `scripts/h2r_cpu_environment.sh`（MuJoCo 3.17.0，无 MJWarp 与 Mink）；不要升级共享环境中的其他方法依赖。CPU 路径的模块不能在导入时依赖 Mink 或 MJWarp。

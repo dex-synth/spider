@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from .files import read_manifest, seal
+from .files import manifest_fields, read_manifest, seal
 from .task import load_task
 
 FORMAT = "h2r-suite-v1"
@@ -45,9 +45,11 @@ def load_suite(path):
     """Read the task list; each task is verified when its case is loaded."""
     path = Path(path).resolve()
     manifest = read_manifest(path, MANIFEST, FORMAT, _identity)
-    cases = tuple(Case(case["case_id"], case["dataset"], case["profile"], case["robot"],
-                       tuple(case["hand_sides"]), case["task_id"], path / case["task"])
-                  for case in manifest["cases"])
+    # Only case_id and task_id are part of the suite identity; the other case fields are read here.
+    with manifest_fields(f"{path.name}/{MANIFEST}"):
+        cases = tuple(Case(case["case_id"], case["dataset"], case["profile"], case["robot"],
+                           tuple(case["hand_sides"]), case["task_id"], path / case["task"])
+                      for case in manifest["cases"])
     if len({case.case_id for case in cases}) != len(cases):
         raise ValueError("Duplicate suite case")
     return Suite(path, manifest["suite_id"], manifest["name"], cases, manifest.get("provenance", {}))

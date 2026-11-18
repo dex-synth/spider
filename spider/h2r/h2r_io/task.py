@@ -6,7 +6,7 @@ import shutil
 import xml.etree.ElementTree as ET
 
 from .demo import Demo, load_demo
-from .files import content_hash, read_json, sha256, text_hash, write_json
+from .files import content_hash, manifest_fields, read_json, read_manifest, sha256, text_hash, write_json
 from .robot import Robot, load_robot
 
 FORMAT = "h2r-task-v1"
@@ -84,10 +84,12 @@ def load_task(path, *, root=None):
     if root is None:
         root = next((parent for parent in path.parents if (parent / "suite.json").is_file()), path)
     root = Path(root).resolve()
-    manifest = read_json(path / MANIFEST)
-    if manifest.get("format") != FORMAT or content_hash(_identity(manifest)) != manifest.get("task_id"):
-        raise ValueError(f"Unsupported or changed task: {path}")
-    references = {key: manifest[key]["path"] for key in ("demo", "robot")}
+    manifest = read_manifest(path, MANIFEST, FORMAT, _identity)
+    # The package paths are outside the task identity: a standalone export changes them.
+    with manifest_fields(f"{path.name}/{MANIFEST}"):
+        references = {key: manifest[key]["path"] for key in ("demo", "robot")}
+        if not all(isinstance(value, str) for value in references.values()):
+            raise TypeError("demo and robot paths must be strings")
     demo = load_demo(_reference(path, references["demo"], root))
     robot = load_robot(_reference(path, references["robot"], root))
     if demo.demo_id != manifest["demo"]["demo_id"] or robot.robot_id != manifest["robot"]["robot_id"]:

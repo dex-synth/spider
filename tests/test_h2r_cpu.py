@@ -515,6 +515,67 @@ class PlanTests(unittest.TestCase):
             _, data, _ = load_plan(output, task)
             self.assertEqual(data["joint_targets"].shape, (0, len(NAMES)))
 
+    def test_method_rollout_is_the_plan_replayed_at_every_physics_step(self):
+        """The exported rollout starts at the evaluation state and passes the plan's."""
+        from spider.h2r import method_rollout
+        from spider.h2r.h2r_io.method_rollout import CONDITIONS, load_method_rollout
+
+        def export(plan, task, output):
+            with patch("spider.h2r.method_rollout.load_task", return_value=task):
+                return load_method_rollout(
+                    method_rollout.export(plan, task.path, output), task
+                )
+
+        with tempfile.TemporaryDirectory() as root:
+            task = toy_task(Path(root))
+            prepared = write_prepared(Path(root) / "prepared", task, joint_reference())
+            plan = self.plan(root, task, prepared, self.BUDGET)
+            manifest, (states,) = export(plan, task, Path(root) / "rollout")
+            controller = manifest["binding"]["controller"]
+            self.assertEqual(manifest["binding"]["method"], "spider")
+            self.assertEqual(controller["sha256"], sha256(plan / "plan.json"))
+            self.assertEqual(manifest["conditions"], CONDITIONS)
+            simulator = manifest["simulator"]
+            self.assertEqual(simulator["version"], mujoco.__version__)
+            self.assertEqual(simulator["physics_dt_s"], 0.01)
+            self.assertTrue(simulator["deterministic"])
+            verdict = manifest["episodes"][0]["verdict"]
+            self.assertIs(verdict["success"], True)
+            self.assertIsNone(verdict["ended_at_s"])
+            self.assertIn("obj_pos_cm", verdict["metrics"])
+            # Ten control frames of five physics steps, after the initial state.
+            np.testing.assert_allclose(states["time_s"], np.arange(51) * 0.01)
+            initial = read_json(plan / "initial_robot.json")
+            np.testing.assert_array_equal(
+                states["robot_q"][0], [initial[name] for name in NAMES]
+            )
+            np.testing.assert_array_equal(
+                states["object_root_poses"][0, 0], [0.3, 0, 0.1, 1, 0, 0, 0]
+            )
+            # qpos is the box (7), its lid (1), then the robot joints in NAMES order.
+            planned = arrays(plan / "trajectory_cpu.npz")["qpos"]
+            np.testing.assert_allclose(
+                states["robot_q"][5::5], planned[:, 8:], atol=1e-9
+            )
+            np.testing.assert_allclose(
+                states["object_root_poses"][5::5, 0], planned[:, :7], atol=1e-9
+            )
+            np.testing.assert_allclose(
+                states["object_q"][5::5, 0], planned[:, 7], atol=1e-9
+            )
+
+            unplanned = Path(root) / "unplanned"
+            unplanned.mkdir()
+            rejected = write_prepared(
+                unplanned / "prepared", task, joint_reference(), accepted=False
+            )
+            plan = self.plan(unplanned, task, rejected, self.BUDGET)
+            manifest, (states,) = export(plan, task, unplanned / "rollout")
+            verdict = manifest["episodes"][0]["verdict"]
+            self.assertIs(verdict["success"], False)
+            self.assertEqual(verdict["ended_at_s"], 0.01)
+            np.testing.assert_array_equal(states["robot_q"][0], states["robot_q"][1])
+
     def test_settings_cannot_select_assets_or_unknown_options(self):
         """Overrides reach algorithm settings only."""
         from spider.h2r import cpu_plan
