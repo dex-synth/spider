@@ -520,10 +520,11 @@ class PlanTests(unittest.TestCase):
         from spider.h2r import method_rollout
         from spider.h2r.h2r_io.method_rollout import CONDITIONS, load_method_rollout
 
-        def export(plan, task, output):
+        def export(plan, task, output, training_seed=None):
             with patch("spider.h2r.method_rollout.load_task", return_value=task):
                 return load_method_rollout(
-                    method_rollout.export(plan, task.path, output), task
+                    method_rollout.export(plan, task.path, output, training_seed),
+                    task,
                 )
 
         with tempfile.TemporaryDirectory() as root:
@@ -563,6 +564,12 @@ class PlanTests(unittest.TestCase):
             np.testing.assert_allclose(
                 states["object_q"][5::5, 0], planned[:, 7], atol=1e-9
             )
+            self.assertIsNone(manifest["training_seed"])
+            # A release may declare the planning seed (0 here) as the training seed.
+            manifest, _ = export(plan, task, Path(root) / "seeded", training_seed=0)
+            self.assertEqual(manifest["training_seed"], 0)
+            with self.assertRaisesRegex(ValueError, "planning seed 0"):
+                export(plan, task, Path(root) / "other-seed", training_seed=42)
 
             unplanned = Path(root) / "unplanned"
             unplanned.mkdir()

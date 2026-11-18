@@ -71,21 +71,31 @@ def replay(model, layout, qpos, targets, substeps):
     return np.array(states)
 
 
-def export(plan, task_path, output):
+def export(plan, task_path, output, training_seed=None):
     """Write the method rollout of one sealed CPU plan.
 
     A plan without controls (its initial pose failed SPIDER's pre-check) gives a
     rollout that ends after one physics step in that pose: the benchmark applies
     its own admission check to the first state.
 
+    SPIDER has no training. A benchmark release that keys its cells by training
+    seed declares the planning seed in that place; `training_seed` must then be the
+    plan's planning seed. Left out, the rollout records no training seed.
+
     Raises:
-        ValueError: The plan is not a CPU plan of this task.
+        ValueError: The plan is not a CPU plan of this task, or `training_seed`
+            is not its planning seed.
         RuntimeError: The replay does not reproduce the planned states.
     """
     plan, task = Path(plan), load_task(task_path)
     binding, controls, initial = load_plan(plan, task)
     if binding.get("recipe") != "cpu":
         raise ValueError("Method rollouts are exported for CPU plans only")
+    if training_seed is not None and training_seed != binding["planning_seed"]:
+        raise ValueError(
+            f"--training-seed {training_seed} is not the plan's planning seed "
+            f"{binding['planning_seed']}"
+        )
     control_dt = binding["control_dt_s"]
     substeps = int(
         yaml.safe_load((plan / "resolved_config.yaml").read_text())["h2r"]["substeps"]
@@ -129,7 +139,7 @@ def export(plan, task_path, output):
         task,
         method=METHOD,
         controller=binding,  # as reported to the evaluation (spider.h2r.evaluation)
-        training_seed=None,
+        training_seed=training_seed,
         simulator={
             "name": "mujoco",
             "version": mujoco.__version__,
@@ -149,8 +159,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("plan", "task", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument(
+        "--training-seed",
+        type=int,
+        default=None,
+        help="declare the plan's planning seed as the training seed",
+    )
     args = parser.parse_args()
-    print(export(args.plan, args.task, args.output))
+    print(export(args.plan, args.task, args.output, args.training_seed))
 
 
 if __name__ == "__main__":
