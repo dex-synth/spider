@@ -265,6 +265,8 @@ def setup_env(
     config: Config,
     ref_data: tuple[torch.Tensor, ...] | None = None,
     num_threads: int = 0,
+    model: mujoco.MjModel | None = None,
+    scene: dict[str, np.ndarray] | None = None,
 ) -> CpuEnv:
     """Build ``config.num_samples`` worlds of the scene at reference frame 0.
 
@@ -274,6 +276,9 @@ def setup_env(
         ref_data: The reference of :func:`load_data`; its ``qpos`` and ``qvel``
             replace the scene's when given.
         num_threads: Threads of the batch (0: one per CPU).
+        model: A compiled scene to use instead of ``config.model_path`` (H2R:
+            the benchmark task, compiled in memory).
+        scene: The tables to use instead of ``config.data_path``.
     """
     try:
         from mujoco import batch
@@ -282,9 +287,13 @@ def setup_env(
             f"simulator=cpu needs mujoco.batch (MuJoCo >= 3.17); found "
             f"{mujoco.__version__}"
         ) from error
-    model = mujoco.MjModel.from_xml_path(str(Path(config.model_path).expanduser()))
-    with np.load(Path(config.data_path).expanduser()) as archive:
-        scene = {name: archive[name] for name in archive.files}
+    if model is None:
+        model = mujoco.MjModel.from_xml_path(str(Path(config.model_path).expanduser()))
+    if scene is None:
+        with np.load(Path(config.data_path).expanduser()) as archive:
+            scene = {name: archive[name] for name in archive.files}
+    else:
+        scene = dict(scene)
     _tracking_weights(config, scene)
     frame_dt, substeps = float(scene["frame_dt"]), int(scene["substeps"])
 
