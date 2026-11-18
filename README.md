@@ -1,13 +1,14 @@
 # SPIDER for h2r_bench
 
-本 fork 用于 [h2r_bench](https://github.com/dex-synth/h2r_bench) 的共同任务评估。
-对齐 SPIDER 上游 fast Mink IK 与 best-sample MPC；任务、机器人、物体、支撑与评估物理由 bench 提供。
+本 fork 用于 [h2r_bench](https://github.com/dex-synth/h2r_bench) 的共同任务评估。任务、机器人、物体、支撑与评估物理由 bench 提供。
+有两个配方：正式配方是上游 CPU workflow（`dev/cpu`，MuJoCo CPU 批量接口上的 sampling MPC，见 [CPU 配方](docs/h2r-cpu.md)）；可选配方对齐上游 fast Mink IK 与 best-sample MPC，下文“使用”一节描述的是它。
 原生数据集处理、场景生成、自带机器人资产和旧 Leap 部署入口已移除；原生配方请使用
 [上游 SPIDER](https://github.com/facebookresearch/spider)。
 
 ```text
-bench task → SPIDER fast Mink IK 与原有平滑 → 私有 MJWarp MPC → 封存机器人控制
-    └──────────────────────────────────────→ bench 独立物理评估
+CPU 配方：  bench task → V2D Sharpa IK（由 FlashCHORD 的 prepare 导入）→ 私有 MuJoCo CPU MPC → 封存机器人控制
+fast MJWarp：bench task → SPIDER fast Mink IK 与原有平滑 → 私有 MJWarp MPC → 封存机器人控制
+    两者的控制都交给 bench 独立物理评估
 ```
 
 ## 使用
@@ -34,13 +35,14 @@ prepared 不携带 XML、mesh 或可覆盖场景的路径。
 最佳样本快照、重试与回退仅作用于私有规划，不改变评估世界。
 
 完整环境、评估命令、输入校验与支持限制见 [H2R 使用说明](docs/h2r.md)。
-准备与计划格式为 `spider-h2r-v5`、`spider-h2r-plan-v5`；更早的格式需要从 bench task 重新准备与规划。
+准备与计划格式为 `spider-h2r-v6`、`spider-h2r-plan-v6`；更早的格式需要从 bench task 重新准备与规划。
 
 ## 开发
 
 - `spider/h2r/`：标定、参考、具名控制、方法产物与评估客户端。
 - `spider/h2r/h2r_io/`：bench 任务加载器与评估协议的副本，由 `h2r-bench export-loader` 生成，不在此修改。
 - `spider/h2r/check.py`：CPU 检查 plan 与统一评估的实际提交控制、初态和时间覆盖，保留提前失败状态。
+- `spider/h2r/cpu_scene.py`、`cpu_world.py`、`cpu_plan.py`：CPU 配方的私有模型与表、simulator 模块和规划入口；循环与判定是上游的 `examples/run_cpu.py`、`spider/simulators/cpu.py`、`spider/postprocess/evaluate_cpu.py`。
 - `spider/preprocess/ik_fast.py`：Mink 分阶段求解及原生后处理。
 - `spider/h2r/kinematics.py`：共同目标与 fast IK 的具名／时间映射。
 - `spider/optimizers/sampling_fast.py`：原生最佳样本优化器；复用 `sampling.py`。

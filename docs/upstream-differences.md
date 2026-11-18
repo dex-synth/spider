@@ -1,11 +1,11 @@
 # 相对 original SPIDER 的 H2R 适配
 
-本文记录当前 H2R 实现（产物格式 v5）相对 original 的差异。算法与参数对照核对于 2026-11-10；2026-11-15 迁移到 bench 的统一 task 包与 `h2r-evaluation-v2` 协议，只改变输入读取、时钟交接和产物身份，不改变下述算法与配方。
+本 fork 有两个配方。正式配方是上游 `dev/cpu`（`3d132978`）的 CPU workflow，它相对上游的差异见 [CPU 配方](h2r-cpu.md#与上游的差异)；该提交于 2026-11-18 合并进本 fork，合并范围见[文末](#上游-devcpu-的合并范围)。本文其余部分记录可选的 fast MJWarp 配方（产物格式 v6）相对 original `44717007` 的差异。算法与参数对照核对于 2026-11-10；2026-11-15 迁移到 bench 的统一 task 包与 `h2r-evaluation-v2` 协议，只改变输入读取、时钟交接和产物身份，不改变下述算法与配方。
 
 | 对照对象 | 版本与范围 |
 | --- | --- |
 | original | `facebookresearch/spider@44717007de41cbef7565dff7ff9f4453557a2d3d`；本机 `baselines/spider` |
-| H2R 兼容版 | `dex-synth/spider`，`spider-h2r-v5` + `sign-continuous-mean-nlerp-v1`；本机 `h2r_bench_baselines/spider`，具体 revision 封存在 binding 中 |
+| H2R 兼容版 | `dex-synth/spider`，`spider-h2r-v6`（`reference: spider-mink-fast`）+ `sign-continuous-mean-nlerp-v1`；本机 `h2r_bench_baselines/spider`，具体 revision 封存在 binding 中 |
 | 共同评估 | `h2r_bench` 封存的 task 包（`h2r-task-v1`）与独立 physical rollout；参考声明 `wxyz-unit-continuous-v1`、MANO 约定 `h2r-mano-v1` |
 
 选定的上游流水线是 `spider/preprocess/ik_fast.py` → `examples/run_mjwp_fast.py`。
@@ -31,7 +31,7 @@ H2R 保留其 fast IK、sampling MPC、最佳样本选择及重试／回退语�
 
 ## 保留的算法与默认参数
 
-`spider/h2r/config/default.yaml` 和两份 `override/*_fast.yaml`（ARCTIC、OakInk2）与上述 original **逐字节一致**。上游另有 GigaHand、OakInk 的 fast override；bench 不分发这两个数据集，其副本已移除。
+两份 `override/*_fast.yaml`（ARCTIC、OakInk2）与上述 original **逐字节一致**；`spider/h2r/config/default.yaml` 与所合并的上游 `3d132978` 逐字节一致，它相对 `44717007` 只差 `viewer` 默认值一行，该键不属于 H2R 读取的算法字段。上游另有 GigaHand、OakInk 的 fast override；bench 不分发这两个数据集，其副本已移除。
 解析顺序为基础默认值、对应数据集 fast override、H2R 适配层 `spider/h2r/config/h2r.yaml`、任务参考采样周期、显式 `--config`；只提取算法字段，实际值写入 `resolved_config.yaml`。适配层目前只有一项：关闭 sanity check（见下）。
 配方按 `task.dataset` 在 `settings.DATASET_RECIPES` 中选择：上游没有 HOT3D、TACO 的 fast override，二者使用基础配方；未列出的数据集报错，不借用其他配方。以下均为未传自定义配置时的值。
 
@@ -90,7 +90,7 @@ fast 每个 attempt 跑满配置轮数，最多 4 个 attempt，不使用 improv
 
 因此，当前结果不能称为与原生场景、初态和错误计时逐帧等价。保留的是选定 fast 算法与配方，评估条件服从共同任务。
 plan 中的 `qpos/qvel` 对应控制执行后的 `time_s + control_dt_s`，不作为发布时刻的评估状态。
-prepared 须标记 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，缺失或未知时重新 prepare。此前 task 格式下生成的 v4 及更早产物不再读取。
+prepared 须标记 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，缺失或未知时重新 prepare。v5 及更早的产物不再读取。
 
 ## 工程范围与验证边界
 
@@ -106,3 +106,16 @@ prepared 须标记 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`�
 - NLERP 修正通过 ARCTIC `s01/box_use_01` 的 CPU 数组回归：问题窗口的完美源姿态跟随误差从 `3.138874 rad` 降至 `0.012080 rad`，原 tracking check 不再错误拒绝；非旋转位置、控制和对应差分速度保持一致。记录位于 bench 的 `runs/checks/spider-quaternion-nlerp-20261110/`。
 
 当前格式下的验证范围见 [H2R 使用说明](h2r.md#检查与已验证范围)。
+
+## 上游 dev/cpu 的合并范围
+
+`3d132978` 经真实合并进入本 fork，保留的上游文件留在上游路径并逐字节相同：
+
+| 处理 | 文件 |
+| --- | --- |
+| 保留 | `spider/simulators/cpu.py`（另加一处可选参数，见 CPU 配方页）、`spider/postprocess/evaluate_cpu.py`、`examples/run_cpu.py`、`examples/config/cpu.yaml` 及各自的测试；`sampling.py` 与 `config.py` 中的两个修复 |
+| 恢复（`run_cpu.py` 导入时需要） | `spider/io.py`、`spider/postprocess/__init__.py`、`spider/viewers/{__init__,rerun_viewer,viser_viewer}.py`，以及 `Config` 中上游 runner 读取的任务、路径与可视化字段和 `filter_config_fields` |
+| 不带入 | FlashCHORD GPU 版本（`chord*.py`、`run_chord.py`、`chord.yaml`）、`docs/workflows/`，以及本 fork 此前已移除的文件 |
+
+合并时 Git 把 `examples/` 识别为已改名到 `spider/h2r/`：新增的 `examples/` 文件须移回上游路径，`spider/h2r/config/default.yaml` 会随之合入上游对 `examples/config/default.yaml` 的改动。以后同步上游时按同样方式处理，并重做 CPU 配方页记录的两项对照：上游测试通过，以及本 fork 与上游源码在同一上游场景上的结果逐位相同。
+

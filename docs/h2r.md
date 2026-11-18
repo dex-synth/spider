@@ -1,4 +1,6 @@
-# h2r_bench 任务与统一评估
+# h2r_bench 任务与统一评估：fast MJWarp 配方
+
+本页说明可选的 fast MJWarp 配方（SPIDER 的 Mink IK 加 `run_mjwp_fast` 的 MPC）。正式配方是上游 CPU workflow，见 [CPU 配方](h2r-cpu.md)；评估客户端、回放核验和协议两者共用，本页的相应章节同样适用。两个配方的 prepared 与 plan 互不通用，在 bench 中声明为不同的 variant。
 
 每个序列依次运行 `spider.h2r.prepare` 和 `spider.h2r.plan` 一次，再用同一份封存的控制序列进行 h2r_bench 的 `sim` 与 `sim-dr` 评估。`prepare` 只读取 bench 分发的 task 目录，生成 IK 参考；`plan` 在 SPIDER 私有 MJWarp 世界中执行原生 fast sampling MPC，保存整条机器人位置目标。统一评估默认使用 MuJoCo，客户端按自己的 0.01 s 控制周期回放控制，不重新规划。
 
@@ -18,7 +20,7 @@ bash scripts/h2r_environment.sh /path/to/spider-env
 
 ## 输入
 
-唯一的输入是 bench 的 **task 目录**（`h2r-task-v1`：`task.json`、`scene.xml`、`compiled.json`，以及 task 内或所属 suite 共享的 demo 与 robot 包）。四个数据集（ARCTIC、OakInk2、HOT3D、TACO）的 task 结构相同，没有按数据集区分的读取代码。
+唯一的输入是 bench 的 **task 目录**（`h2r-task-v1`：`task.json`、`scene.xml`、`compiled.json`，以及 task 内或所属 suite 共享的 demo 与 robot 包）。各数据集的 task 结构相同，没有按数据集区分的读取代码；本配方有上游配方的数据集是 ARCTIC、OakInk2、HOT3D、TACO。
 
 task 由 `spider/h2r/h2r_io/` 读取。它是 bench 加载器的副本（`h2r-bench export-loader` 生成，`SOURCE.json` 记录来源 commit 与文件 hash），随方法源码一起进入产物的版本身份；不在本仓库修改，Ruff 不检查该目录。bench 更新加载器后重新导出，并用 `h2r-bench check-loader spider/h2r/h2r_io` 核对。加载时校验 task、demo、robot 的全部文件及场景资源闭包，被改动的输入在编译模型前被拒绝。
 
@@ -54,12 +56,12 @@ prepare 对 IK 得到的零速度初态做 SPIDER 自己的预检：关节限位
 | `trajectory_ikrollout.npz` | 上游带噪声的私有前向诊断，不作为规划参考 |
 | `initial_robot.json`、`initialization.json` | 具名零速度初态提案与方法侧预检结果 |
 | `resolved_config.yaml`、`calibration.json` | 实际配方与手部标定 |
-| `h2r_binding.json` | `task_id`、`demo_id`、`robot_id`，数据集、参与手、方法版本及产物 hash |
+| `h2r_binding.json` | `task_id`、`demo_id`、`robot_id`，数据集、参与手、参考种类（本配方为 `reference: spider-mink-fast`）、方法版本及产物 hash |
 
 prepared 只含方法参考、标定、配置与初态，可整体搬移；规划必须同时提供匹配的 task。
 不读取 prepared 中的任何场景，不提供 `--model-path`、机器人资产或物体物理覆盖参数。
 
-准备和计划格式分别为 `spider-h2r-v5`、`spider-h2r-plan-v5`，绑定 `task_id`、`demo_id` 与 `robot_id`。v4 及更早格式面向此前的 task 目录与协议，一律拒绝并提示从 `--task` 重新生成；不能靠修改格式字段迁移旧目录。prepared 还须带 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，该标记随 preparation 进入 plan 身份。
+准备和计划格式分别为 `spider-h2r-v6`、`spider-h2r-plan-v6`，绑定 `task_id`、`demo_id` 与 `robot_id`。prepared 记录参考种类，plan 记录配方（本配方为 `recipe: mjwp-fast`）和保存控制的文件名；本配方只接受 Mink 参考的 prepared，CPU 配方的 prepared 会被拒绝。v5 及更早格式一律拒绝并提示从 `--task` 重新生成；不能靠修改格式字段迁移旧目录。prepared 还须带 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，该标记随 preparation 进入 plan 身份。
 文件 hash 校验用于内容一致性，不是来源签名，也不构成共享文件系统上的进程隔离。
 
 在 SPIDER 环境对完整序列规划一次，规划 seed 与后续评估 seeds 分开：
@@ -130,7 +132,7 @@ h2r-bench summarize-evaluations --batch "$BATCH"
 - **明确例外**：上游 sanity check 默认关闭：`spider/h2r/config/h2r.yaml` 设 `mpc.sanity_check_seconds: 0.0`（项目决定，2026-11-15），因为部分任务首帧物体由手握持、悬空起始，保持首个控制时物体不会静止；`--config` 设 `mpc.sanity_check_seconds: 3.0` 可恢复上游行为。按用户要求，`num_dr=num_dyn=1` 使用 nominal 参数，不保留上游 `linspace(...,1)` 产生的非零偏移；free-root 旋转使用上述符号对齐与归一化修正，不能宣称与 original 逐值等价。其他 DR 数量明确拒绝。contact guidance/Gibbs 在上游 fast 不受支持；保持关闭。不顺带修正上游 NaN 选择等其他缺陷。
 - **部署**：每个 seq 离线规划一次，sim/sim-dr 复用同一控制。没有在线执行入口：已执行的真实评估动作无法回退，不能将删掉回退的循环称为完整 upstream fast。
 
-通信协议为 `h2r-evaluation-v2`，收发与 start 请求使用 `h2r_io.client`。客户端核对协议、`task_id`、关节名称与单位；`task_id` 已确定评估方运行的就是规划所用的任务，不再逐项比较物体、观测与环境描述。start 的 binding 为 `{demo_id, robot_id, method: "spider", controller: plan.json}`。仅返回 `joint_targets`，没有 root wrench、物体辅助力、评估 reset 或方法提前终止。每次评估的 binding 与控制日志记录相同 `plan_id`，规划耗时与评估耗时分别保存。
+通信协议为 `h2r-evaluation-v2`，收发与 start 请求使用 `h2r_io.client`。客户端核对协议、`task_id`、关节名称与单位；`task_id` 已确定评估方运行的就是规划所用的任务，不再逐项比较物体、观测与环境描述。start 的 binding 为 `{demo_id, robot_id, method: "spider", controller: plan.json 的内容加上它的 sha256}`。仅返回 `joint_targets`，没有 root wrench、物体辅助力、评估 reset 或方法提前终止。每次评估的 binding 与控制日志记录相同 `plan_id`，规划耗时与评估耗时分别保存。
 
 ## 检查与已验证范围
 
@@ -148,6 +150,8 @@ python -m spider.h2r.check --plan "$PLAN" --task "$TASK" \
 ```bash
 python -m unittest discover -s tests -p 'test_h2r*.py' -v
 ```
+
+该命令在本配方的环境中运行；`test_h2r_cpu.py` 中需要 `mujoco.batch` 的测试在这里被跳过，它们在 CPU 配方的环境中运行。
 
 测试用加载器的封存函数生成小型 demo／robot／task 包，或在内存中构造 `h2r_io.Task`。task 测试覆盖 tracking sites 与私有 timestep 不改变物理参数、被改动或旧格式的 task 被加载器拒绝、prepared 只含方法参考以及旧产物格式拒绝；回放测试覆盖 plan 导出的原生时钟、控制数的浮点取整、不同评估步长下的 tick 推导、游标检查、不完整／非有限计划及文件篡改拒绝；检查测试覆盖 run 自带时钟、提前失败前缀与虚报完整时域。边界测试覆盖乱序 actuator、多 root+hinge、右手／左手／双手的手部目标与标定选择、start 请求和多 episode 终止。旋转测试覆盖符号等价、跨 180°、三处 NLERP、非法输入与近零平均拒绝；fast 行为测试覆盖四个数据集的配方与未知数据集拒绝、标量过滤与速度保持、固定轮数／4 次 attempt、最佳样本选择、快照推进、控制移窗、local boost、锚点恢复和失败截断。
 
