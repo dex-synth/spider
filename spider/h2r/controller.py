@@ -41,7 +41,9 @@ class Controller:
         source = arrays(prepared / "trajectory_kinematic.npz")
         options = settings(prepared / "resolved_config.yaml")["mpc"]
         validate_clock(options)
-        self.config = cfg = Config(embodiment_type="h2r", device=device, **options)
+        self.config = cfg = Config(
+            embodiment_type="h2r", simulator="mjwp", device=device, **options
+        )
         compute_steps(cfg)
         # Upstream derives this before the task_info reference-rate override.
         cfg.ref_steps = int(np.round(MPCSettings().ref_dt / cfg.sim_dt))
