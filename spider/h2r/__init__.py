@@ -1,1 +1,1 @@
-"""SPIDER preparation and online MPC for independent h2r_bench evaluation."""
+"""SPIDER preparation, offline planning and control replay for h2r_bench tasks."""

@@ -71,29 +71,39 @@ class MPCSettings:
 
 
 CONFIG_DIR = Path(__file__).with_name("config")
+# Upstream fast override per benchmark dataset; None is the pinned base default
+# (upstream publishes no fast override for that dataset).
 DATASET_RECIPES = {
-    "arctic": "arcticv2",
-    "arcticv2": "arcticv2",
-    "oakink2": "oakinkv2",
-    "oakinkv2": "oakinkv2",
-    "oakink": "oakink",
-    "gigahand": "gigahand",
+    "arctic": "override/arcticv2_fast.yaml",
+    "oakink2": "override/oakinkv2_fast.yaml",
+    "hot3d": None,
+    "taco": None,
 }
 
 
 def recipe(dataset):
-    """Select only the matching upstream fast override, never borrow a recipe."""
-    name = DATASET_RECIPES.get(dataset)
-    return f"override/{name}_fast.yaml" if name else None
+    """Select the dataset's own upstream recipe; never borrow or fall back."""
+    if dataset not in DATASET_RECIPES:
+        raise ValueError(
+            f"No SPIDER recipe for dataset {dataset!r}; "
+            f"expected one of {sorted(DATASET_RECIPES)}"
+        )
+    return DATASET_RECIPES[dataset]
 
 
 def settings(path=None, *, dataset=None, ref_dt=None):
-    """Resolve pinned YAMLs, then explicit overrides; retain dataset reference rate."""
+    """Resolve pinned YAMLs, the H2R adaptation, then explicit overrides.
+
+    Order: dataclass defaults, upstream default.yaml, the dataset's fast override,
+    h2r.yaml, the reference rate, then `path`. `dataset=None` applies no dataset
+    recipe: it re-reads a resolved configuration.
+    """
     raw = yaml.safe_load(Path(path).read_text()) if path else {}
     if not isinstance(raw, dict) or set(raw) - {"ik", "mpc"}:
         raise ValueError("Settings must contain only ik and mpc mappings")
     native = yaml.safe_load((CONFIG_DIR / "default.yaml").read_text())
-    if recipe(dataset):
+    adaptation = yaml.safe_load((CONFIG_DIR / "h2r.yaml").read_text())
+    if dataset is not None and recipe(dataset):
         native.update(yaml.safe_load((CONFIG_DIR / recipe(dataset)).read_text()))
     result = {}
     for name, cls in (("ik", IKSettings), ("mpc", MPCSettings)):
@@ -101,6 +111,9 @@ def settings(path=None, *, dataset=None, ref_dt=None):
         values = defaults.copy()
         if name == "mpc":
             values.update({k: v for k, v in native.items() if k in defaults})
+        if set(adaptation.get(name, {})) - defaults.keys():
+            raise ValueError(f"Unknown {name} options in h2r.yaml")
+        values.update(adaptation.get(name, {}))
         if ref_dt is not None:
             values["ref_dt"] = ref_dt
         overrides = raw.get(name, {})
@@ -140,7 +153,7 @@ def settings(path=None, *, dataset=None, ref_dt=None):
     return result
 
 
-def validate_clock(options, task):
+def validate_clock(options):
     """Native action grids must be integral; dataset sampling need not be."""
     steps = {}
     for name in ("horizon", "knot_dt", "ctrl_dt"):
@@ -159,7 +172,8 @@ PIPELINE = {
     "upstream_revision": UPSTREAM_REVISION,
     "ik_entry": "spider/preprocess/ik_fast.py",
     "mpc_entry": "examples/run_mjwp_fast.py",
-    "config_source": "examples/config/default.yaml + dataset fast override + Config",
+    "config_source": "Config defaults + examples/config/default.yaml"
+    " + dataset fast override + spider/h2r/config/h2r.yaml + --config",
     "recipe": "fast-mink-best-sample-h2r",
     "rotation_processing": "sign-continuous-mean-nlerp-v1",
     "num_dr_1": "nominal; upstream single-world nonzero offsets intentionally disabled",

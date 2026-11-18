@@ -12,7 +12,7 @@ Date: 2025-08-10
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 import numpy as np
 import torch
@@ -24,9 +24,19 @@ class Config:
     # Layout labels are used by native-equation regression checks. Runtime uses
     # named H2R semantics; there are no robot, dataset or model-path defaults.
     embodiment_type: str = "h2r"
+    # Fields of upstream's Config that its CPU runner (examples/run_cpu.py) reads.
+    # H2R entries set the paths and the seed explicitly; none selects an asset.
+    robot_type: str = ""
+    task: str = ""
+    seed: int = 0
+    dataset_dir: str = ""
+    dataset_name: str = ""
+    data_id: int = 0
+    model_path: str = ""
+    data_path: str = ""
 
     # === SIMULATOR CONFIGURATION ===
-    simulator: str = "mjwp"  # "isaac" | "mujoco" | "mjwp" | "mjwp_cons" | "mjwp_eq" | "mjwp_cons_eq" | "kinematic"
+    simulator: str = "cpu"  # "cpu" | "mjwp" | "mjwp_cons" | "mjwp_eq" | "mjwp_cons_eq" | "isaac" | "mujoco" | "kinematic" | "chord" | ...
     device: str = "cuda:0"
     sanity_check_seconds: float = 3.0
     sanity_check_pos_thresh: float = 0.01
@@ -127,6 +137,18 @@ class Config:
     terminal_rew_scale: float = 1.0
     contact_rew_scale: float = 0.0
 
+    # === VISUALIZATION CONFIGURATION ===
+    show_viewer: bool = True
+    viewer: str = "viser"  # "mujoco" | "rerun" | "viser" | "isaac"
+    wait_on_finish: bool = True  # block after optimization to keep viewer alive
+    rerun_spawn: bool = False
+    save_video: bool = True
+    save_info: bool = True
+    save_rerun: bool = False
+    save_viser: bool = False
+    save_metrics: bool = True
+    save_config: bool = True
+
     # === TRACE RECORDING ===
     trace_dt: float = 1 / 50.0
     num_trace_uniform_samples: int = 4
@@ -161,6 +183,12 @@ class Config:
     env_params_list: list = field(default_factory=list)
     viewer_body_entity_and_ids: list = field(default_factory=list)
     output_dir: str = ""
+
+
+def filter_config_fields(config_dict: dict) -> dict:
+    """Filter config dict keys to those defined in Config."""
+    allowed = {field.name for field in fields(Config)}
+    return {key: value for key, value in config_dict.items() if key in allowed}
 
 
 def get_noise_scale(config: Config) -> torch.Tensor:
@@ -215,7 +243,8 @@ def get_noise_scale(config: Config) -> torch.Tensor:
     noise_scale[0] *= 0.0
     # set last few samples to exploit_noise_scale
     num_exploit_samples = int(config.num_samples * config.exploit_ratio)
-    noise_scale[-num_exploit_samples:] *= config.exploit_noise_scale
+    if num_exploit_samples > 0:  # [-0:] would be every sample
+        noise_scale[-num_exploit_samples:] *= config.exploit_noise_scale
     return noise_scale
 
 

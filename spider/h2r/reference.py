@@ -6,55 +6,23 @@ from scipy.spatial.transform import Rotation
 
 from spider.quaternion import normalize_qpos
 
-from .model import finite
 
+def hand_targets(task, calibration):
+    """Wrist pose and fingertip targets of every participating hand.
 
-def hand_targets(reference, arrays, sides, calibration):
-    """Use decoded wrist/tips, converting only raw MANO root rotations to world."""
-    if (
-        reference["mano"]["joint_order"]
-        != "MANO 16 + thumb/index/middle/ring/little tips"
-    ):
-        raise ValueError("Unsupported MANO joint order")
-    count = len(arrays["time_s"])
-    coordinates = reference["coordinates"]
-    world = Rotation.identity()
-    if reference["mano"].get("parameter_coordinates") == "source_world":
-        transform = finite(
-            coordinates["source_to_benchmark"], (4, 4), "source transform"
-        )
-        if (
-            not np.allclose(
-                transform[:3, :3].T @ transform[:3, :3], np.eye(3), atol=1e-7
-            )
-            or not np.isclose(np.linalg.det(transform[:3, :3]), 1, atol=1e-7)
-            or not np.allclose(transform[3], [0, 0, 0, 1], atol=1e-7)
-        ):
-            raise ValueError("Non-rigid source transform")
-        world = Rotation.from_matrix(transform[:3, :3])
+    The MANO wrist rotation is already in the benchmark world frame; only the
+    method's wrist-frame calibration is applied.
+    """
     wrists, tips = {}, {}
-    for side in sides:
-        joints = finite(arrays[f"{side}_joints_m"], (count, 21, 3), "MANO joints")
-        if f"{side}_mano_quat" in arrays:
-            quat = finite(
-                arrays[f"{side}_mano_quat"], (count, 16, 4), "MANO quaternion"
-            )[:, 0]
-            if not np.allclose(np.linalg.norm(quat, axis=1), 1, atol=1e-4, rtol=0):
-                raise ValueError("Invalid MANO root quaternion")
-            rotation = Rotation.from_quat(quat, scalar_first=True)
-        else:
-            rotation = Rotation.from_rotvec(
-                finite(arrays[f"{side}_mano_rot"], (count, 3), "MANO rotation")
-            )
-        rotation = (
-            world
-            * rotation
-            * Rotation.from_matrix(calibration[side]["mano_from_wrist_rotation"])
-        )
+    for side in task.hand_sides:
+        hand = task.demo.hands[side]
+        rotation = Rotation.from_quat(
+            hand.mano_quat[:, 0], scalar_first=True
+        ) * Rotation.from_matrix(calibration[side]["mano_from_wrist_rotation"])
         wrists[side] = np.column_stack(
-            (joints[:, 0], rotation.as_quat(scalar_first=True))
+            (hand.joints_m[:, 0], rotation.as_quat(scalar_first=True))
         )
-        tips[side] = joints[:, 16:21].copy()
+        tips[side] = hand.joints_m[:, 16:21].copy()
     return wrists, tips
 
 
@@ -130,13 +98,3 @@ def sample_reference(model, layout, arrays, query):
         arrays["time_s"], arrays.get("ctrl", layout.controls(arrays["qpos"])), query
     )
     return qpos, qvel, ctrl
-
-
-def hold_indices(times, query):
-    """Select the latest available action; never look ahead or stretch time."""
-    # Tolerance only handles arithmetic disagreement at identical timestamps.
-    return np.clip(
-        np.searchsorted(times, np.asarray(query) + 1e-12, side="right") - 1,
-        0,
-        len(times) - 1,
-    )

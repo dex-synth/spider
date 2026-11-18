@@ -18,7 +18,8 @@ from spider.optimizers.sampling_fast import (
 )
 from spider.simulators import mjwp
 
-from .bundle import arrays, load_inputs, load_prepared, read_json
+from .artifacts import REFERENCE_MINK, arrays, load_prepared
+from .h2r_io.files import read_json
 from .model import Layout
 from .reference import native_reference, sample_reference
 from .sanity import check_stability
@@ -30,24 +31,23 @@ from .tracking import Tracking, load_parameters, save_parameters
 class Controller:
     """One private fast planning pass; checkpoints never touch evaluation state."""
 
-    def __init__(self, prepared, task_path, device, seed):
+    def __init__(self, prepared, task, device, seed):
         started = time.perf_counter()
         if torch.device(device).type != "cuda":
             raise ValueError("SPIDER H2R MPC requires a CUDA device for MJWarp")
         prepared = Path(prepared)
-        task, reference, data = load_inputs(task_path)
-        self.binding = load_prepared(prepared, task)
+        self.binding = load_prepared(prepared, task, REFERENCE_MINK)
         self.task = task
         source = arrays(prepared / "trajectory_kinematic.npz")
         options = settings(prepared / "resolved_config.yaml")["mpc"]
-        validate_clock(options, task)
-        self.config = cfg = Config(embodiment_type="h2r", device=device, **options)
+        validate_clock(options)
+        self.config = cfg = Config(
+            embodiment_type="h2r", simulator="mjwp", device=device, **options
+        )
         compute_steps(cfg)
         # Upstream derives this before the task_info reference-rate override.
         cfg.ref_steps = int(np.round(MPCSettings().ref_dt / cfg.sim_dt))
-        model, _, _ = planning_model(
-            task_path, task, read_json(prepared / "calibration.json")
-        )
+        model, _, _ = planning_model(task, read_json(prepared / "calibration.json"))
         cfg.nq, cfg.nv, cfg.nu, cfg.npair = model.nq, model.nv, model.nu, model.npair
         self.layout = Layout(model, task)
         self.tracking = Tracking(self.layout, cfg)
@@ -55,7 +55,7 @@ class Controller:
         compute_noise_schedule(cfg)
         # Explicit user-authorized exception: num_dr=1 is truly nominal.
         cfg.env_params_list = [[{}] for _ in range(cfg.max_num_iterations)]
-        initial = self.layout.reference_positions(reference, data)[0]
+        initial = self.layout.reference_positions()[0]
         initial[self.layout.robot_q] = source["qpos"][0, self.layout.robot_q]
         initial_ctrl = self.layout.controls(initial)
         self.sanity = check_stability(model, self.layout, initial, initial_ctrl, cfg)
@@ -204,9 +204,3 @@ class Controller:
             )
         )
         return self.step
-
-    def control(self, frame, joint_names):
-        """Native rollback requires offline planning; reject online equivalence claims."""
-        raise ValueError(
-            "Upstream fast rollback requires --plan; online --prepared is unsupported"
-        )

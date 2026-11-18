@@ -63,7 +63,7 @@ def diagnostic_rollout(model, layout, qpos, qvel, options):
     mujoco.mj_step(model, data, nstep=steps)
     result = np.empty_like(qpos)
     result[0] = qpos[0]
-    groups = layout.task["semantics"]["joint_groups"]
+    groups = layout.task.robot.semantics["joint_groups"]
     wrist_names = groups["wrist_translation"] + groups["wrist_rotation"]
     wrist_actuators = [layout.actuators[layout.names.index(n)] for n in wrist_names]
     for i in range(1, len(qpos)):

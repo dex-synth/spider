@@ -1,0 +1,16 @@
+{
+  "package": "h2r_io",
+  "version": "1",
+  "bench_commit": "a3696f956ee54e1a6600960e4ad9111706943e9f",
+  "files": {
+    "__init__.py": "3bdc681b70d6c47cb9e862113cf1fb96e1e31464ea5330f152de4aea938538e2",
+    "client.py": "7097160b7df1aa7b08c59fe22c8d50093c6025b31789a4e9b03a98764047ff05",
+    "demo.py": "dce36a399379093111aacb1b801fb4ab56af4fc48507bdaa48c7aa8c94e82f9f",
+    "files.py": "f1d502d00c8039e02d84180dfd075b4910cc2850bf4e6945c2bca1f21a9d3294",
+    "mano.py": "aec6e26acc34d12ca2d911295c9c1ff9670bf511e3ab781068a2053cab32a0d6",
+    "method_rollout.py": "005060c90f77c3583208944aca679dc1f509a2d53cd5b9ad5006c30c658d980e",
+    "robot.py": "a1aa6ce62d6e17f1a129101f73f711c998c52d1074b7318d899021b819d16b56",
+    "suite.py": "def21760d37a6f30fef686845f7ed8a0004ac5c5ca264c600969938e04de59e7",
+    "task.py": "caa43621a9ee196ab0476fee26d927bcf1aa665ac6483dbdbf6771383b410cea"
+  }
+}

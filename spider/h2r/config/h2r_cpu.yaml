@@ -1,0 +1,11 @@
+# H2R adaptation of the CPU recipe (spider.h2r.cpu_plan). Upstream keeps these
+# values in the scene it exports from FlashCHORD (spider/simulators/chord_export.py);
+# here the scene is the benchmark task, so they are stated on the method side.
+frame_dt: 0.05 # control frame of upstream's scenes [s]: 20 Hz control and replanning
+substeps: 5 # private physics steps per control frame: 100 Hz, as upstream
+action_ema: 0.5 # spider/simulators/chord.py ACTION_EMA
+# action_clip of upstream's published scenes (FlashCHORD's residual action range)
+action_clip:
+  wrist_position_m: 0.2
+  wrist_rotation_rad: 1.0
+  finger_rad: 1.0

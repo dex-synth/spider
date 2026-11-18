@@ -2,7 +2,8 @@
 
 本 fork 保留 SPIDER 的 IK 与 sampling MPC，仅消费 h2r_bench 分发的任务。
 
-- [共同任务准备、规划与评估](h2r.md)
+- [CPU 配方：准备、规划与评估](h2r-cpu.md)（正式配方）
+- [fast MJWarp 配方：准备、规划与评估](h2r.md)（可选配方）
 - [相对 original SPIDER 的适配与参数差异](upstream-differences.md)
 - [原生 SPIDER](https://github.com/facebookresearch/spider)
 

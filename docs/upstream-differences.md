@@ -1,12 +1,12 @@
 # 相对 original SPIDER 的 H2R 适配
 
-本文记录当前 H2R v4 实现相对 original 的差异，核对日期为 2026-11-10。
+本 fork 有两个配方。正式配方是上游 `dev/cpu`（`3d132978`）的 CPU workflow，它相对上游的差异见 [CPU 配方](h2r-cpu.md#与上游的差异)；该提交于 2026-11-18 合并进本 fork，合并范围见[文末](#上游-devcpu-的合并范围)。本文其余部分记录可选的 fast MJWarp 配方（产物格式 v6）相对 original `44717007` 的差异。算法与参数对照核对于 2026-11-10；2026-11-15 迁移到 bench 的统一 task 包与 `h2r-evaluation-v2` 协议，只改变输入读取、时钟交接和产物身份，不改变下述算法与配方。
 
 | 对照对象 | 版本与范围 |
 | --- | --- |
 | original | `facebookresearch/spider@44717007de41cbef7565dff7ff9f4453557a2d3d`；本机 `baselines/spider` |
-| H2R 兼容版 | `dex-synth/spider`，v4 + `sign-continuous-mean-nlerp-v1`；本机 `h2r_bench_baselines/spider`，具体 revision 封存在 binding 中 |
-| 共同评估 | `h2r_bench` 封存的 task 与独立 physical rollout；新规范参考声明 `wxyz-unit-continuous-v1` |
+| H2R 兼容版 | `dex-synth/spider`，`spider-h2r-v6`（`reference: spider-mink-fast`）+ `sign-continuous-mean-nlerp-v1`；本机 `h2r_bench_baselines/spider`，具体 revision 封存在 binding 中 |
+| 共同评估 | `h2r_bench` 封存的 task 包（`h2r-task-v1`）与独立 physical rollout；参考声明 `wxyz-unit-continuous-v1`、MANO 约定 `h2r-mano-v1` |
 
 选定的上游流水线是 `spider/preprocess/ik_fast.py` → `examples/run_mjwp_fast.py`。
 H2R 保留其 fast IK、sampling MPC、最佳样本选择及重试／回退语义，部署为 **离线控制回放**（`offline-control-replay`）。
@@ -16,24 +16,24 @@ H2R 保留其 fast IK、sampling MPC、最佳样本选择及重试／回退语�
 
 | 项目 | original | H2R 兼容版 |
 | --- | --- | --- |
-| 任务输入 | 方法读取原始数据集、MANO 资产和处理目录 | `prepare --task` 读取 bench 封存的示范、任务和机器人 bundle；直接使用已解码 MANO joints 与 root rotation |
+| 任务输入 | 方法读取原始数据集、MANO 资产和处理目录 | `prepare --task` 经 bench 加载器副本 `spider/h2r/h2r_io/` 读取一个 task 目录（含 demo 与 robot 包）；直接使用已解码的 `joints_m` 与世界系腕部旋转 `mano_quat[:, 0]`，四个数据集同一读取路径 |
 | 场景资产 | 方法生成 XML、使用自带机器人与物体资产 | IK、MPC 从同一 task 编译私有模型，只添加无质量 tracking sites；无自带场景 fallback，保留 context 物体 |
 | 机器人映射 | 依赖 embodiment 和固定状态切片 | 按 task 的关节、actuator、free root、被动 hinge 名称映射；reward 公式不变，被动 hinge 使用物体旋转权重 |
-| 手部标定 | 原生机器人 tracking sites | 新增 Sharpa 双手／右手虚拟腕的 MANO-to-wrist 固定旋转；参数在 `spider/h2r/config/sharpa_wave.json`，其他机器人明确拒绝 |
+| 手部标定 | 原生机器人 tracking sites | 新增 Sharpa Wave 左、右手的 MANO-to-wrist 固定旋转，按机器人名称选择、按 task 的参与手取用；参数在 `spider/h2r/config/sharpa_wave.json`，其他机器人明确拒绝 |
 | 配置入口 | Hydra／原生数据集配置与模型路径 | `spider/h2r/settings.py` 只接收 `ik`、`mpc` 算法字段；任务、机器人、资产与速度由 bench 指定 |
 | 执行入口与输出 | `run_mjwp_fast.py` 运行原生 fast 流程并保存轨迹 | `spider.h2r.plan` 封装相同 fast 流程，输出绑定共同 task、可供独立评估回放的封存 plan |
-| 评估部署 | 原生 rollout 与方法内计分 | `evaluation` 通过 `h2r-evaluation-v1` 提交具名 `joint_targets`；bench 独立推进物理、施加扰动、终止并计分 |
-| 产物校验 | 原生轨迹与日志 | 新增 task／plan 身份、文件 hash、控制时钟与完整覆盖校验；prepared 不保存场景，旧 v1–v3 产物必须重新生成 |
-| 回放诊断 | 无对应统一评估检查器 | `spider.h2r.check` 在 CPU 核对 plan、初始化、提交控制及 physical JSONL／NPZ；区分有效失败前缀和完整执行 |
+| 评估部署 | 原生 rollout 与方法内计分 | `evaluation` 通过 `h2r-evaluation-v2`（`h2r_io.client`）声明 0.01 s 控制周期并提交具名 `joint_targets`；bench 独立推进物理、施加扰动、终止并计分 |
+| 产物校验 | 原生轨迹与日志 | 新增 `task_id`／`demo_id`／`robot_id` 与 plan 身份、文件 hash、控制时钟与完整覆盖校验；prepared 不保存场景，v4 及更早的产物必须重新生成 |
+| 回放诊断 | 无对应统一评估检查器 | `spider.h2r.check` 在 CPU 核对 plan、初始化、提交控制及 physical JSONL／NPZ，时钟取自 rollout 的 `run.json`；区分有效失败前缀和完整执行 |
 
 控制器不能提交物体状态、辅助力、评估 reset 或提前终止。规划 seed 与评估 seeds 分开；同一序列的 `sim`、`sim-dr` 复用同一 plan，回放控制不随评估观测改变。
 私有规划的 `qpos/qvel` 只作诊断，实际成绩来自 bench 的 physical rollout。
 
 ## 保留的算法与默认参数
 
-`spider/h2r/config/default.yaml` 和四份 `override/*_fast.yaml` 与上述 original **逐字节一致**。
-解析顺序为基础默认值、对应数据集 fast override、任务参考采样周期、显式 `--config`；只提取算法字段，实际值写入 `resolved_config.yaml`。
-HOT3D 没有专用 override，使用基础配方。以下均为未传自定义配置时的值。
+两份 `override/*_fast.yaml`（ARCTIC、OakInk2）与上述 original **逐字节一致**；`spider/h2r/config/default.yaml` 与所合并的上游 `3d132978` 逐字节一致，它相对 `44717007` 只差 `viewer` 默认值一行，该键不属于 H2R 读取的算法字段。上游另有 GigaHand、OakInk 的 fast override；bench 不分发这两个数据集，其副本已移除。
+解析顺序为基础默认值、对应数据集 fast override、H2R 适配层 `spider/h2r/config/h2r.yaml`、任务参考采样周期、显式 `--config`；只提取算法字段，实际值写入 `resolved_config.yaml`。适配层目前只有一项：关闭 sanity check（见下）。
+配方按 `task.dataset` 在 `settings.DATASET_RECIPES` 中选择：上游没有 HOT3D、TACO 的 fast override，二者使用基础配方；未列出的数据集报错，不借用其他配方。以下均为未传自定义配置时的值。
 
 ### IK
 
@@ -57,22 +57,20 @@ HOT3D 没有专用 override，使用基础配方。以下均为未传自定义�
 
 | 数据集 | fast override | iterations | `ctrl_dt / horizon / knot_dt`（s） | temperature | 物体旋转门槛（rad） | sanity check（s） | contacts／constraint rows |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| HOT3D／无专用配方 | 基础 default | 32 | `0.4 / 1.6 / 0.4` | 0.1 | 0.3 | 3 | 120／350 |
+| HOT3D、TACO | 无（基础 default） | 32 | `0.4 / 1.6 / 0.4` | 0.1 | 0.3 | 3 | 120／350 |
 | ARCTIC | `arcticv2_fast` | 4 | `1.5 / 3 / 1` | 1 | 2.5 | 0 | 256／768 |
 | OakInk2 | `oakinkv2_fast` | 4 | `1.5 / 3 / 1` | 1 | 1.0 | 3 | 120／350 |
-| GigaHand | `gigahand_fast` | 8 | `1.5 / 3 / 0.5` | 1 | 0.5 | 3 | 120／350 |
-| OakInk | `oakink_fast` | 8 | `1.5 / 3 / 1` | 1 | 0.5 | 3 | 120／350 |
 
 噪声和 reward 同样沿用对应配方，不只对齐 samples／iterations：
 
-| 参数 | 基础 default | ARCTIC／OakInk2／OakInk | GigaHand |
-| --- | --- | --- | --- |
-| `first_ctrl_noise_scale / last_ctrl_noise_scale / final_noise_scale` | `0.5 / 1 / 0.1` | `2 / 4 / 0.01` | `1 / 2 / 0.01` |
-| `joint_noise_scale / pos_noise_scale / rot_noise_scale` | `0.15 / 0.03 / 0.03` | `0.1 / 0.01 / 0.01` | `0.03 / 0.03 / 0.01` |
-| `base_pos_rew_scale / base_rot_rew_scale` | `1 / 0.3` | `0.1 / 0.03` | `0.1 / 0.03` |
+| 参数 | 基础 default（HOT3D、TACO） | ARCTIC／OakInk2 |
+| --- | --- | --- |
+| `first_ctrl_noise_scale / last_ctrl_noise_scale / final_noise_scale` | `0.5 / 1 / 0.1` | `2 / 4 / 0.01` |
+| `joint_noise_scale / pos_noise_scale / rot_noise_scale` | `0.15 / 0.03 / 0.03` | `0.1 / 0.01 / 0.01` |
+| `base_pos_rew_scale / base_rot_rew_scale` | `1 / 0.3` | `0.1 / 0.03` |
 
 各配方共同保留：`joint_rew_scale=0.003`、物体 `pos_rew_scale=1`／`rot_rew_scale=0.3`、`vel_rew_scale=0.0001`、`terminal_rew_scale=1`、`exploit_ratio=exploit_noise_scale=0.01`、物体位置门槛 `0.1 m`。
-sanity check 在私有 CPU 模型以 `0.002 s` 积分，检查全过程最大 root 漂移，门槛 `0.01 m / 0.3 rad`；ARCTIC 按原生 override 关闭。
+sanity check 在私有 CPU 模型以 `0.002 s` 积分、保持首个控制，检查全过程最大 root 漂移，门槛 `0.01 m / 0.3 rad`；上游基础默认值与 OakInk2 配方保持 3 s，ARCTIC override 关闭。H2R 默认对所有数据集关闭（`h2r.yaml` 的 `mpc.sanity_check_seconds: 0.0`，项目决定，2026-11-15）：评估没有 warm-up，部分任务首帧物体由手握持，保持首个控制时物体不会静止。代码仍保留该检查，`--config` 设 3.0 即恢复上游行为。
 
 fast 每个 attempt 跑满配置轮数，最多 4 个 attempt，不使用 improvement 提前停止。runner 保留最多 3 次 local retry、恢复上限 `max_revert_depth=3`；每级 boost 将 iterations 乘 2、noise 乘 `sqrt(2)`，恢复时回到同一锚点。普通成功不清除 boost，越过恢复锚点后才重置。
 失败保留截断／最后候选诊断，但不发布不完整 plan。`contact_guidance`、`gibbs_sampling`、`terminate_resample` 默认均为 `false`；前两项开启时明确拒绝，符合所选上游 fast 的限制。
@@ -84,25 +82,40 @@ fast 每个 attempt 跑满配置轮数，最多 4 个 attempt，不使用 improv
 | 标称规划 | `num_dr=num_dyn=1`；`linspace(-0.005, 0.005, 1)` 构造 `xy_offset=pair_margin=-0.005 m` | 数量仍为 1，但不施加这两个方法侧偏移，沿用 task 标称参数；这是显式保留的算法例外，其他 DR 数量拒绝。评估 `sim-dr` 由 bench 独立施加 |
 | 私有物理步长 | `sim_dt=0.01 s` | 默认不变；新增 `physics_substeps=1`，私有积分步长为 `sim_dt / physics_substeps` |
 | hand solver／接触覆盖 | 强设 `iterations=20`、`ls_iterations=50`、`o_solref=[0.02,1]`、`o_solimp=[0,0.95,0.03,0.5,2]`、`implicitfast` | 删除这些方法侧覆盖，继承 task 的 solver、接触、惯量、执行器与限幅；规划模型只改变私有 timestep |
-| 初始状态 | 从平滑参考的 qpos/qvel 初始化，先执行一次 `mj_step` 再将时间归零 | 使用共同原始物体姿态、IK 机器人位置、零速度；实际起点无 warm-up。新增关节限位和 task 穿透门槛检查，失败不生成可部署 binding |
-| `ref_dt` 来源 | `task_info.json`，缺省 `0.02 s` | 从共同示范时间轴取得真实采样周期；例如本次 HOT3D 为 `1/30 s`，不强制改成 50 Hz |
+| 初始状态 | 从平滑参考的 qpos/qvel 初始化，先执行一次 `mj_step` 再将时间归零 | 使用参考首帧的物体姿态、IK 机器人位置、零速度；实际起点无 warm-up。新增关节限位和方法侧穿透预检（0.02 m；评估的准入阈值是评估设置，不提供给方法），失败不生成可部署 binding |
+| `ref_dt` 来源 | `task_info.json`，缺省 `0.02 s` | 取 demo 的 `reference_hz`（当前各数据集均为 30 Hz，即 `1/30 s`），不强制改成 50 Hz |
 | 裁剪／插值时间 | filtered 参考重新从零编号；先按基础 `0.02 s` 求 `ref_steps`，后读取数据集周期 | 保留原生插值因子与非旋转分量值，旋转使用 NLERP；显式记录窗口中心的源时间，再采样到私有网格；前后端点保持，速度独立插值、不在查询时重新差分 |
-| 规划终点 | 默认 `len(ref) - horizon_steps - ctrl_steps` | 规划到共同 `task.end_tick`；末端参考保持，发布完整任务所需控制，不缩短共同计分时域 |
-| 独立评估频率 | 无 H2R 评估时钟 | 新任务 `method=spider` 使用 300 Hz 物理／100 Hz 控制，每个原生动作保持 3 tick；最后一个动作可不足 3 tick |
+| 规划终点 | 默认 `len(ref) - horizon_steps - ctrl_steps` | 规划 `ceil(task.duration_s / 0.01 s)` 个动作，覆盖完整任务时长；末端参考保持，不缩短共同计分时域 |
+| 独立评估频率 | 无 H2R 评估时钟 | plan 以原生 0.01 s 动作周期发布，客户端在 start 中声明该周期；评估物理步长是评估设置（当前 300 Hz，每个动作保持 3 个物理步，最后一个动作可更短），只从 `hello.dt_s` 得知，0.01 s 不是其整数倍时 start 被拒绝 |
 
 因此，当前结果不能称为与原生场景、初态和错误计时逐帧等价。保留的是选定 fast 算法与配方，评估条件服从共同任务。
-历史 240 Hz 物理／30 Hz 控制任务仍按其封存条件解释；零阶保持会丢弃部分 100 Hz 动作变化，新任务必须重新 prepare／plan。
-plan 中的 `qpos/qvel` 对应控制执行后的 `source_time_s + native_action_dt_s`，不作为发布时刻的评估状态。
-新规划要求 prepared 标记 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，缺失或未知时重新 prepare。文件结构仍为 v4；历史完整 v4 plan 保留原身份用于 CPU 回放与审计，不自动升级其旋转处理声明。
+plan 中的 `qpos/qvel` 对应控制执行后的 `time_s + control_dt_s`，不作为发布时刻的评估状态。
+prepared 须标记 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`，缺失或未知时重新 prepare。v5 及更早的产物不再读取。
 
 ## 工程范围与验证边界
 
-新增 `spider/h2r/` 承担任务读取、标定、具名映射、规划封存、协议客户端和回放检查。
+新增 `spider/h2r/` 承担标定、具名映射、规划封存、评估客户端和回放检查；task 读取与在线协议收发使用其中的 bench 加载器副本 `h2r_io/`。
 `ik_fast.py` 抽出可调用的求解／后处理函数；`sampling_fast.py` 只新增可注入的 tracking-error 检查；`mjwp.py` 改为接收 task 编译模型；`fast_loop.py` 保留原 runner 的重试／回退。
 原始数据处理、自带资产、场景生成、其他 simulator 工作流、viewer、旧计分／部署脚本及 `spider-mjwp` 入口已移除；原生运行使用 original checkout。
 
 方法继续使用独立 Python 3.12 环境，不依赖 bench Python 包。新增 `h2r` extra 显式声明 SciPy、PyYAML、DAQP；本机 CUDA 12 安装配方固定 MuJoCo `3.7.0`、mujoco-warp `3.7.0.1`、Warp `1.12.1`、Torch `2.7.1`、Mink `1.1.0`，完整约束见 `scripts/h2r_runtime_constraints.txt`。评估环境独立，不要求与规划环境同版本。
 
-旋转修正前的 v4 已通过 36 项测试。该历史版本的完整 HOT3D keyboard／Sharpa 双手任务使用默认规划配方，在 `sim`、`sim-dr` 各验证 seed 0，同一 plan 的 504 个控制均完整执行并通过共同评估；证据位于 bench 的 `runs/checks/spider-v4-replay-20261109/`。该结果不代表新旋转处理或所有数据集、机器人及多 seed 成绩。
+以下记录取得于此前的 task 格式与 v4 产物，说明算法与数值修正的来历，不延续为当前格式下的验证：
 
-NLERP 修正通过 40 项 H2R 测试及 ARCTIC `s01/box_use_01` 的 CPU 数组回归：问题窗口的完美源姿态跟随误差从 `3.138874 rad` 降至 `0.012080 rad`，原 tracking check 不再错误拒绝；非旋转位置、控制和对应差分速度保持一致。记录位于 bench 的 `runs/checks/spider-quaternion-nlerp-20261110/`。尚未重新运行该修正后的完整 plan／evaluation。
+- 旋转修正前的 v4 在完整 HOT3D keyboard／Sharpa 双手任务上使用默认规划配方，`sim`、`sim-dr` 各验证 seed 0，同一 plan 的 504 个控制均完整执行并通过共同评估；证据位于 bench 的 `runs/checks/spider-v4-replay-20261109/`。
+- NLERP 修正通过 ARCTIC `s01/box_use_01` 的 CPU 数组回归：问题窗口的完美源姿态跟随误差从 `3.138874 rad` 降至 `0.012080 rad`，原 tracking check 不再错误拒绝；非旋转位置、控制和对应差分速度保持一致。记录位于 bench 的 `runs/checks/spider-quaternion-nlerp-20261110/`。
+
+当前格式下的验证范围见 [H2R 使用说明](h2r.md#检查与已验证范围)。
+
+## 上游 dev/cpu 的合并范围
+
+`3d132978` 经真实合并进入本 fork，保留的上游文件留在上游路径并逐字节相同：
+
+| 处理 | 文件 |
+| --- | --- |
+| 保留 | `spider/simulators/cpu.py`（另加一处可选参数，见 CPU 配方页）、`spider/postprocess/evaluate_cpu.py`、`examples/run_cpu.py`、`examples/config/cpu.yaml` 及各自的测试；`sampling.py` 与 `config.py` 中的两个修复 |
+| 恢复（`run_cpu.py` 导入时需要） | `spider/io.py`、`spider/postprocess/__init__.py`、`spider/viewers/{__init__,rerun_viewer,viser_viewer}.py`，以及 `Config` 中上游 runner 读取的任务、路径与可视化字段和 `filter_config_fields` |
+| 不带入 | FlashCHORD GPU 版本（`chord*.py`、`run_chord.py`、`chord.yaml`）、`docs/workflows/`，以及本 fork 此前已移除的文件 |
+
+合并时 Git 把 `examples/` 识别为已改名到 `spider/h2r/`：新增的 `examples/` 文件须移回上游路径，`spider/h2r/config/default.yaml` 会随之合入上游对 `examples/config/default.yaml` 的改动。以后同步上游时按同样方式处理，并重做 CPU 配方页记录的两项对照：上游测试通过，以及本 fork 与上游源码在同一上游场景上的结果逐位相同。
+
