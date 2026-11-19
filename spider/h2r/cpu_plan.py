@@ -18,10 +18,10 @@ from pathlib import Path
 import mujoco
 import numpy as np
 import yaml
+from h2r_io import load_task
+from h2r_io.files import read_json, sha256, write_json
 
 from .artifacts import INITIAL_POSE_ONLY, REFERENCE_V2D, arrays, load_prepared
-from .h2r_io import load_task
-from .h2r_io.files import read_json, sha256, write_json
 from .plan import seal
 from .replay import control_count
 

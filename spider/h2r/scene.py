@@ -3,8 +3,7 @@
 from pathlib import Path
 
 import mujoco
-
-from .h2r_io.files import read_json
+from h2r_io.files import read_json
 
 # Hand tracking frames by robot name; sides are selected by the task.
 CALIBRATIONS = {"sharpa_wave": "config/sharpa_wave.json"}

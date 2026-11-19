@@ -14,6 +14,8 @@ from pathlib import Path
 import mujoco
 import numpy as np
 import yaml
+from h2r_io import load_task
+from h2r_io.files import read_json, sha256, write_json
 
 from .artifacts import (
     PREPARED_FORMAT,
@@ -22,8 +24,6 @@ from .artifacts import (
     arrays,
     task_identity,
 )
-from .h2r_io import load_task
-from .h2r_io.files import read_json, sha256, write_json
 from .model import Layout
 from .settings import PIPELINE, recipe, settings, validate_clock
 

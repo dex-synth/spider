@@ -11,5 +11,6 @@ uv pip install --python "$prefix/bin/python" \
   --constraint "$repo/scripts/h2r_cpu_runtime_constraints.txt" \
   'mujoco==3.17.0' 'torch==2.7.1' numpy scipy pyyaml loguru hydra-core tyro \
   opencv-python-headless 'imageio[ffmpeg]' 'rerun-sdk==0.26.2' viser trimesh \
-  matplotlib pytest
+  matplotlib pytest \
+  'h2r-io @ git+ssh://git@github.com/dex-synth/h2r_bench.git@h2r-io-v1#subdirectory=packages/h2r-io'
 uv pip install --python "$prefix/bin/python" --no-deps -e "$repo"

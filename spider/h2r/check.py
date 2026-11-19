@@ -6,11 +6,11 @@ import math
 from pathlib import Path
 
 import numpy as np
+from h2r_io import load_task
+from h2r_io.files import read_json, write_json
 
 from .artifacts import arrays
 from .evaluation import METHOD
-from .h2r_io import load_task
-from .h2r_io.files import read_json, write_json
 from .replay import load_plan
 
 ROLLOUT_FORMAT = "h2r-rollout-v2"

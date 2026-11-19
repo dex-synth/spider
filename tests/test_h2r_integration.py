@@ -8,18 +8,18 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import h2r_io
 import mujoco
 import numpy as np
 import torch
 import warp as wp
+from h2r_io import client
+from h2r_io.files import write_json
 from scipy.spatial.transform import Rotation
 
 from spider.config import Config, compute_noise_schedule, compute_steps
-from spider.h2r import h2r_io
 from spider.h2r.artifacts import PLAN_FORMAT, PREPARED_FORMAT, load_prepared
 from spider.h2r.evaluation import run, start_request
-from spider.h2r.h2r_io import client
-from spider.h2r.h2r_io.files import write_json
 from spider.h2r.model import Layout
 from spider.h2r.reference import hand_targets, sample_reference, velocities
 from spider.h2r.scene import calibration_for

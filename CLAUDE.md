@@ -3,7 +3,7 @@
 本 fork 是 h2r_bench 专用 baseline。使用入口与边界见 [README](README.md) 和 [H2R 说明](docs/h2r.md)。
 
 - 机器人、物体、环境与示范只从 bench 的完整 task 读取；不要恢复自带资产、原生场景生成或模型路径 fallback。
-- task 只经 `spider/h2r/h2r_io/`（`h2r-bench export-loader` 的副本）读取；不修改该目录，缺少的能力在方法代码中处理并反馈给 bench。向 `Layout`、`scene`、`reference` 等传递 `h2r_io.Task` 对象，不重建旧式 task 字典。
+- task 只经依赖包 `h2r-io` 的 `h2r_io` 读取（固定在 h2r_bench 的 tag `h2r-io-v1`）；不在本仓库修改或复制它，缺少的能力在方法代码中处理并反馈给 bench。向 `Layout`、`scene`、`reference` 等传递 `h2r_io.Task` 对象，不重建旧式 task 字典。
 - IK、MPC、标定、奖励与控制算法留在 SPIDER；bench 独立推进评估物理并计分。
 - 有两个配方，不能混用其步骤、参考或产物：正式的 **CPU 配方**（上游 `dev/cpu` 的 CPU workflow：`spider.h2r.cpu_plan`，参考由 `prepare --reference-from` 从 FlashCHORD 的 V2D IK 导入，见 `docs/h2r-cpu.md`）和可选的 **fast MJWarp 配方**（`ik_fast.py` 加 `spider.h2r.plan`，见 `docs/h2r.md`）。以下未注明的条目描述 fast MJWarp 配方。
 - CPU 配方复用上游的 `examples/run_cpu.py`、`spider/simulators/cpu.py`、`spider/postprocess/evaluate_cpu.py`，这些文件留在上游路径并保持与上游一致，H2R 差异放在 `spider/h2r/cpu_*.py`；对上游文件的改动须在 `docs/h2r-cpu.md` 列出。私有模型按 task 的 `compiled.json` 设置执行器阻尼，其余物理参数只核对不修改。

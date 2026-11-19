@@ -7,11 +7,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+from h2r_io.files import read_json, sha256, write_json
 from test_h2r_integration import memory_task
 from test_h2r_replay import write_plan
 
 from spider.h2r.check import check, json_lines
-from spider.h2r.h2r_io.files import read_json, sha256, write_json
 
 
 def write_lines(path, rows):

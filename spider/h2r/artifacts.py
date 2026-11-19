@@ -1,10 +1,10 @@
-"""SPIDER's own prepared and plan manifests; the task is read by the vendored h2r_io."""
+"""SPIDER's own prepared and plan manifests; the task is read by h2r_io (package h2r-io)."""
 
 from pathlib import Path
 
 import numpy as np
+from h2r_io.files import read_json, verify_files
 
-from .h2r_io.files import read_json, verify_files
 from .settings import PIPELINE
 
 PREPARED_FORMAT = "spider-h2r-v6"

@@ -11,11 +11,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import h2r_io
 import mujoco
 import numpy as np
 import yaml
+from h2r_io.files import read_json, sha256, write_json
 
-from spider.h2r import h2r_io
 from spider.h2r.artifacts import (
     PLAN_FORMAT,
     PREPARED_FILES,
@@ -25,7 +26,6 @@ from spider.h2r.artifacts import (
     arrays,
     validate_prepared,
 )
-from spider.h2r.h2r_io.files import read_json, sha256, write_json
 from spider.h2r.model import Layout
 
 BATCH = importlib.util.find_spec("mujoco.batch") is not None
@@ -517,8 +517,9 @@ class PlanTests(unittest.TestCase):
 
     def test_method_rollout_is_the_plan_replayed_at_every_physics_step(self):
         """The exported rollout starts at the evaluation state and passes the plan's."""
+        from h2r_io.method_rollout import CONDITIONS, load_method_rollout
+
         from spider.h2r import method_rollout
-        from spider.h2r.h2r_io.method_rollout import CONDITIONS, load_method_rollout
 
         def export(plan, task, output, training_seed=None):
             with patch("spider.h2r.method_rollout.load_task", return_value=task):

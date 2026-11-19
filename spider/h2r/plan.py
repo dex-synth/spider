@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 import numpy as np
+from h2r_io import load_task
+from h2r_io.files import content_hash, read_json, sha256, write_json
 
 from .artifacts import (
     INITIAL_POSE_ONLY,
@@ -17,8 +19,6 @@ from .artifacts import (
     task_identity,
 )
 from .fast_loop import run_fast
-from .h2r_io import load_task
-from .h2r_io.files import content_hash, read_json, sha256, write_json
 from .replay import control_count
 from .settings import settings
 

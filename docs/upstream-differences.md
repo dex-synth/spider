@@ -16,7 +16,7 @@ H2R 保留其 fast IK、sampling MPC、最佳样本选择及重试／回退语�
 
 | 项目 | original | H2R 兼容版 |
 | --- | --- | --- |
-| 任务输入 | 方法读取原始数据集、MANO 资产和处理目录 | `prepare --task` 经 bench 加载器副本 `spider/h2r/h2r_io/` 读取一个 task 目录（含 demo 与 robot 包）；直接使用已解码的 `joints_m` 与世界系腕部旋转 `mano_quat[:, 0]`，四个数据集同一读取路径 |
+| 任务输入 | 方法读取原始数据集、MANO 资产和处理目录 | `prepare --task` 经 bench 加载器 `h2r_io`（依赖包 `h2r-io`）读取一个 task 目录（含 demo 与 robot 包）；直接使用已解码的 `joints_m` 与世界系腕部旋转 `mano_quat[:, 0]`，四个数据集同一读取路径 |
 | 场景资产 | 方法生成 XML、使用自带机器人与物体资产 | IK、MPC 从同一 task 编译私有模型，只添加无质量 tracking sites；无自带场景 fallback，保留 context 物体 |
 | 机器人映射 | 依赖 embodiment 和固定状态切片 | 按 task 的关节、actuator、free root、被动 hinge 名称映射；reward 公式不变，被动 hinge 使用物体旋转权重 |
 | 手部标定 | 原生机器人 tracking sites | 新增 Sharpa Wave 左、右手的 MANO-to-wrist 固定旋转，按机器人名称选择、按 task 的参与手取用；参数在 `spider/h2r/config/sharpa_wave.json`，其他机器人明确拒绝 |
@@ -94,7 +94,7 @@ prepared 须标记 `pipeline.rotation_processing=sign-continuous-mean-nlerp-v1`�
 
 ## 工程范围与验证边界
 
-新增 `spider/h2r/` 承担标定、具名映射、规划封存、评估客户端和回放检查；task 读取与在线协议收发使用其中的 bench 加载器副本 `h2r_io/`。
+新增 `spider/h2r/` 承担标定、具名映射、规划封存、评估客户端和回放检查；task 读取与在线协议收发使用依赖包 `h2r-io` 中的 bench 加载器 `h2r_io`。
 `ik_fast.py` 抽出可调用的求解／后处理函数；`sampling_fast.py` 只新增可注入的 tracking-error 检查；`mjwp.py` 改为接收 task 编译模型；`fast_loop.py` 保留原 runner 的重试／回退。
 原始数据处理、自带资产、场景生成、其他 simulator 工作流、viewer、旧计分／部署脚本及 `spider-mjwp` 入口已移除；原生运行使用 original checkout。
 

@@ -19,7 +19,7 @@ task + plan ──► spider.h2r.evaluation ⇄ bench 评估 ──► rollout �
 bash scripts/h2r_cpu_environment.sh /path/to/spider-cpu-env   # 容器内为 /opt/h2r/spider-cpu
 ```
 
-环境固定 MuJoCo 3.17.0 与 Torch 2.7.1，完整约束见 `scripts/h2r_cpu_runtime_constraints.txt`。上游文档的依赖清单漏了 `matplotlib`（Viser 面板用到），脚本已补上。参考导入、规划、回放客户端和回放核验都在这个环境中运行；参考本身由 FlashCHORD 的 prepare 在它自己的环境中生成。
+环境固定 MuJoCo 3.17.0 与 Torch 2.7.1，完整约束见 `scripts/h2r_cpu_runtime_constraints.txt`。上游文档的依赖清单漏了 `matplotlib`（Viser 面板用到），脚本已补上；脚本也安装读取 task 的 `h2r-io`。参考导入、规划、回放客户端和回放核验都在这个环境中运行；参考本身由 FlashCHORD 的 prepare 在它自己的环境中生成。
 
 ## 参考
 

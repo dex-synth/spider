@@ -6,22 +6,22 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import h2r_io
 import mujoco
 import numpy as np
+from h2r_io.demo import seal_demo
+from h2r_io.files import sha256, write_json
+from h2r_io.robot import seal_robot
+from h2r_io.task import seal_task
 from test_h2r_integration import OBJECTS, SEMANTICS, XML, demo_content
 
 from spider.config import Config
-from spider.h2r import h2r_io
 from spider.h2r.artifacts import (
     PREPARED_FILES,
     PREPARED_FORMAT,
     REFERENCE_MINK,
     load_prepared,
 )
-from spider.h2r.h2r_io.demo import seal_demo
-from spider.h2r.h2r_io.files import sha256, write_json
-from spider.h2r.h2r_io.robot import seal_robot
-from spider.h2r.h2r_io.task import seal_task
 from spider.h2r.model import Layout
 from spider.h2r.scene import planning_model
 from spider.h2r.settings import PIPELINE, settings

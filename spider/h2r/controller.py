@@ -8,6 +8,7 @@ import mujoco_warp as mjwarp
 import numpy as np
 import torch
 import warp as wp
+from h2r_io.files import read_json
 
 from spider.config import Config, compute_noise_schedule, compute_steps
 from spider.optimizers.sampling_fast import (
@@ -19,7 +20,6 @@ from spider.optimizers.sampling_fast import (
 from spider.simulators import mjwp
 
 from .artifacts import REFERENCE_MINK, arrays, load_prepared
-from .h2r_io.files import read_json
 from .model import Layout
 from .reference import native_reference, sample_reference
 from .sanity import check_stability

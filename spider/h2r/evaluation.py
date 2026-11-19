@@ -7,9 +7,9 @@ import time
 from pathlib import Path
 
 import numpy as np
+from h2r_io import client, load_task
+from h2r_io.files import write_json
 
-from .h2r_io import client, load_task
-from .h2r_io.files import write_json
 from .replay import Replay, load_plan
 
 METHOD = "spider"

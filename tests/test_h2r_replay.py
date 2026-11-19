@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+from h2r_io import client
+from h2r_io.files import content_hash, read_json, sha256, write_json
 from test_h2r_integration import memory_task
 
 from spider.h2r.artifacts import (
@@ -16,8 +18,6 @@ from spider.h2r.artifacts import (
     PREPARED_FORMAT,
     REFERENCE_MINK,
 )
-from spider.h2r.h2r_io import client
-from spider.h2r.h2r_io.files import content_hash, read_json, sha256, write_json
 from spider.h2r.replay import Replay, control_count, load_plan
 from spider.h2r.settings import PIPELINE
 

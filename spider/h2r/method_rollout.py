@@ -15,13 +15,13 @@ from pathlib import Path
 import mujoco
 import numpy as np
 import yaml
+from h2r_io import load_task
+from h2r_io.method_rollout import write_method_rollout
 
 from .artifacts import INITIAL_POSE_ONLY, arrays
 from .cpu_plan import REPLAY_TOLERANCE
 from .cpu_scene import private_model
 from .evaluation import METHOD
-from .h2r_io import load_task
-from .h2r_io.method_rollout import write_method_rollout
 from .replay import load_plan
 
 # How this rollout is run. The benchmark accepts a method rollout only as such.

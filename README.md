@@ -24,7 +24,7 @@ python -m spider.h2r.check --task "$TASK" --plan "$PLAN" --run "$ROLLOUT" --outp
 ```
 
 `TASK` 是 bench 分发的 task 目录（`h2r-task-v1`，独立打包或位于 suite 内），也是唯一的输入；
-由 `spider/h2r/h2r_io/`（bench 加载器的副本）读取并校验。prepare 和 plan 均从该任务构建内存中的模型，
+由依赖包 `h2r-io`（bench 发布的加载器）读取并校验。prepare 和 plan 均从该任务构建内存中的模型，
 IK 与 MPC 模型只增加无质量 tracking sites；不增加 IK 碰撞避免或速度约束。
 prepared 不携带 XML、mesh 或可覆盖场景的路径。
 每个序列规划一次，sim 与 sim-dr 的评估 seeds 复用同一 plan。
@@ -40,7 +40,6 @@ prepared 不携带 XML、mesh 或可覆盖场景的路径。
 ## 开发
 
 - `spider/h2r/`：标定、参考、具名控制、方法产物与评估客户端。
-- `spider/h2r/h2r_io/`：bench 任务加载器与评估协议的副本，由 `h2r-bench export-loader` 生成，不在此修改。
 - `spider/h2r/check.py`：CPU 检查 plan 与统一评估的实际提交控制、初态和时间覆盖，保留提前失败状态。
 - `spider/h2r/cpu_scene.py`、`cpu_world.py`、`cpu_plan.py`：CPU 配方的私有模型与表、simulator 模块和规划入口；循环与判定是上游的 `examples/run_cpu.py`、`spider/simulators/cpu.py`、`spider/postprocess/evaluate_cpu.py`。
 - `spider/preprocess/ik_fast.py`：Mink 分阶段求解及原生后处理。

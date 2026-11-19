@@ -812,6 +812,14 @@ wheels = [
 ]
 
 [[package]]
+name = "h2r-io"
+version = "1"
+source = { git = "ssh://git@github.com/dex-synth/h2r_bench.git?subdirectory=packages%2Fh2r-io&tag=h2r-io-v1#446866a6bb4248c68592395482c623397fa6252c" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[[package]]
 name = "hf-xet"
 version = "1.4.3"
 source = { registry = "https://amazon-149122183214.d.codeartifact.us-west-2.amazonaws.com/pypi/FAR-libraries/simple/" }
@@ -2908,6 +2916,7 @@ source = { editable = "." }
 dependencies = [
     { name = "google-auth" },
     { name = "gspread" },
+    { name = "h2r-io", marker = "extra == 'h2r'", git = "ssh://git@github.com/dex-synth/h2r_bench.git?subdirectory=packages%2Fh2r-io&tag=h2r-io-v1" },
     { name = "huggingface-hub" },
     { name = "hydra-core" },
     { name = "imageio", extra = ["ffmpeg"] },
@@ -2937,6 +2946,7 @@ dev = [
 ]
 h2r = [
     { name = "daqp" },
+    { name = "h2r-io" },
     { name = "pyyaml" },
     { name = "scipy" },
 ]

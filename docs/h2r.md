@@ -16,13 +16,13 @@
 bash scripts/h2r_environment.sh /path/to/spider-env
 ```
 
-脚本安装 `.[h2r]`（显式声明 SciPy、PyYAML、DAQP），保持 MuJoCo 3.7.0、mujoco-warp 3.7.0.1、Warp 1.12.1、Torch 2.7.1、Mink 1.1.0。完整约束见 `scripts/h2r_runtime_constraints.txt`；它是当前 CUDA 12 配方，与原生 `uv.lock` 的默认平台解析分开。已有容器可直接使用 `/opt/h2r/spider/bin/python`，无需重装。
+脚本安装 `.[h2r]`（显式声明 h2r-io、SciPy、PyYAML、DAQP），保持 MuJoCo 3.7.0、mujoco-warp 3.7.0.1、Warp 1.12.1、Torch 2.7.1、Mink 1.1.0。完整约束见 `scripts/h2r_runtime_constraints.txt`；它是当前 CUDA 12 配方，与原生 `uv.lock` 的默认平台解析分开。已有容器可直接使用 `/opt/h2r/spider/bin/python`，无需重装。
 
 ## 输入
 
 唯一的输入是 bench 的 **task 目录**（`h2r-task-v1`：`task.json`、`scene.xml`、`compiled.json`，以及 task 内或所属 suite 共享的 demo 与 robot 包）。各数据集的 task 结构相同，没有按数据集区分的读取代码；本配方有上游配方的数据集是 ARCTIC、OakInk2、HOT3D、TACO。
 
-task 由 `spider/h2r/h2r_io/` 读取。它是 bench 加载器的副本（`h2r-bench export-loader` 生成，`SOURCE.json` 记录来源 commit 与文件 hash），随方法源码一起进入产物的版本身份；不在本仓库修改，Ruff 不检查该目录。bench 更新加载器后重新导出，并用 `h2r-bench check-loader spider/h2r/h2r_io` 核对。加载时校验 task、demo、robot 的全部文件及场景资源闭包，被改动的输入在编译模型前被拒绝。
+task 由 bench 发布的加载器 `h2r_io` 读取，它来自依赖包 `h2r-io`，在 `pyproject.toml` 中固定为 h2r_bench 的 tag `h2r-io-v1`（`ssh://git@github.com/dex-synth/h2r_bench.git`，子目录 `packages/h2r-io`）。不在本仓库修改或复制它；bench 发布新版本后改动 tag。加载时校验 task、demo、robot 的全部文件及场景资源闭包，被改动的输入在编译模型前被拒绝。
 
 方法使用的内容：
 
